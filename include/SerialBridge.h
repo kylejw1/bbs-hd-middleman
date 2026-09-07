@@ -44,6 +44,7 @@ public:
     // State getters
     BridgeState getState() const;
     bool isInterceptActive() const;
+    uint8_t getConfigVersion() const;
 
 private:
     HardwareSerial _controllerSerial;
@@ -65,6 +66,9 @@ private:
     // Last query opcode received from display
     uint8_t _lastDisplayOpcode;
 
+    // Detected controller config struct version (4 or 5); drives read/write framing
+    uint8_t _configVersion;
+
     // Queued display write commands while in config intercept mode
     QueuedDisplayCmd _queuedWrites[MAX_QUEUED_DISPLAY_CMDS];
     size_t _queuedCount;
@@ -81,6 +85,7 @@ private:
 
     // Synchronous controller query helpers
     bool sendAndReceiveController(const uint8_t* txBuf, size_t txLen, uint8_t* rxBuf, size_t expectedLen, uint32_t timeoutMs);
+    bool receiveController(uint8_t* buf, size_t len, uint32_t timeoutMs);
     void flushQueuedDisplayWrites();
 };
 

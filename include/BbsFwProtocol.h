@@ -57,6 +57,8 @@ constexpr uint8_t ASSIST_FLAG_OVERRIDE_SPEED    = 0x40;
 // Config sizes
 constexpr uint8_t BBS_FW_CONFIG_VERSION         = 5;
 constexpr size_t  BBS_FW_CONFIG_V5_SIZE         = 154;
+constexpr uint8_t BBS_FW_CONFIG_VERSION_4       = 4;
+constexpr size_t  BBS_FW_CONFIG_V4_SIZE         = 152;
 
 // Controller Types
 enum class ControllerType : uint8_t {
@@ -141,7 +143,55 @@ struct BbsFwConfigV5 {
     AssistLevel sport_levels[10];
 };
 
+// Config version 4 (bbs-fw v1.5.0 and earlier): identical to V5 but WITHOUT the
+// `use_pretension` and `pretension_speed_cutoff_kph` fields. Those two bytes were
+// removed in v4 and re-added (at this position) in v5. Every other field is
+// byte-identical; V4 is therefore exactly 2 bytes shorter (152 vs 154).
+struct BbsFwConfigV4 {
+    uint8_t use_freedom_units;
+    uint8_t max_current_amps;
+    uint8_t current_ramp_amps_s;
+    uint8_t max_battery_x100v_u16l;
+    uint8_t max_battery_x100v_u16h;
+    uint8_t low_cut_off_v;
+    uint8_t max_speed_kph;
+    uint8_t use_speed_sensor;
+    uint8_t use_shift_sensor;
+    uint8_t use_push_walk;
+    uint8_t use_temperature_sensor;
+    uint8_t lights_mode;
+    // NOTE: use_pretension and pretension_speed_cutoff_kph are absent in V4.
+    uint8_t wheel_size_inch_x10_u16l;
+    uint8_t wheel_size_inch_x10_u16h;
+    uint8_t speed_sensor_signals;
+    uint8_t pas_start_delay_pulses;
+    uint8_t pas_stop_delay_x100s;
+    uint8_t pas_keep_current_percent;
+    uint8_t pas_keep_current_cadence_rpm;
+    uint8_t throttle_start_voltage_mv_u16l;
+    uint8_t throttle_start_voltage_mv_u16h;
+    uint8_t throttle_end_voltage_mv_u16l;
+    uint8_t throttle_end_voltage_mv_u16h;
+    uint8_t throttle_start_percent;
+    uint8_t throttle_global_spd_lim_opt;
+    uint8_t throttle_global_spd_lim_percent;
+    uint8_t shift_interrupt_duration_ms_u16l;
+    uint8_t shift_interrupt_duration_ms_u16h;
+    uint8_t shift_interrupt_current_threshold_percent;
+    uint8_t walk_mode_data_display;
+    uint8_t assist_mode_select;
+    uint8_t assist_startup_level;
+
+    AssistLevel standard_levels[10];
+    AssistLevel sport_levels[10];
+};
+
 #pragma pack(pop)
+
+// Convert between the version-4 (152-byte) and version-5 (154-byte) config layouts.
+// The only difference is the two pretension fields at V5 byte offsets 12-13.
+void convertConfigV4toV5(const BbsFwConfigV4& src, BbsFwConfigV5& dst);
+void convertConfigV5toV4(const BbsFwConfigV5& src, BbsFwConfigV4& dst);
 
 // =============================================================================
 // PROTOCOL UTILITIES & HELPERS

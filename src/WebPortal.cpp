@@ -1,4 +1,5 @@
 #include "WebPortal.h"
+#include <Update.h>
 
 WebPortal Portal;
 
@@ -61,6 +62,10 @@ void WebPortal::setupRoutes() {
     _server.on("/api/cmd/lights", HTTP_POST, [this]() { handleCmdLights(); });
     _server.on("/api/wifi", HTTP_POST, [this]() { handleWifiConfig(); });
     _server.on("/api/info", HTTP_GET, [this]() { handleInfo(); });
+    _server.on("/api/serial-trace", HTTP_GET, [this]() { handleSerialTrace(); });
+
+    // OTA firmware upload
+    _server.on("/update", HTTP_POST, [this]() { handleOtaComplete(); }, [this]() { handleOtaUpload(); });
 
     // Captive Portal Redirects for iOS, Android, Windows
     _server.on("/generate_204", HTTP_GET, [this]() { handleRoot(); });
@@ -247,6 +252,8 @@ void WebPortal::handleWifiConfig() {
 void WebPortal::handleInfo() {
     JsonDocument doc;
     doc["model"] = "ESP32-S3 (44-Pin DevKitC-1)";
+    doc["fwVersion"] = FW_VERSION;
+    doc["fwBuild"] = __DATE__ " " __TIME__;
     doc["chipRevision"] = ESP.getChipRevision();
     doc["cpuFreqMHz"] = ESP.getCpuFreqMHz();
     doc["freeHeap"] = ESP.getFreeHeap();
@@ -259,6 +266,62 @@ void WebPortal::handleInfo() {
     String resp;
     serializeJson(doc, resp);
     _server.send(200, "application/json", resp);
+}
+
+void WebPortal::handleSerialTrace() {
+    // Optional ?after=<seq> query param for incremental polling
+    uint32_t afterSeq = 0;
+    if (_server.hasArg("after")) {
+        afterSeq = (uint32_t)_server.arg("after").toInt();
+    }
+
+    JsonDocument doc;
+    Debug.buildTraceJson(doc, afterSeq);
+
+    String jsonStr;
+    serializeJson(doc, jsonStr);
+    _server.send(200, "application/json", jsonStr);
+}
+
+void WebPortal::handleOtaUpload() {
+    // XHR `send(file)` posts the raw binary as the request body, so the WebServer
+    // dispatches it through the "raw" handler and populates _currentRaw (NOT
+    // _currentUpload — that stays null and dereferencing it crashes).
+    HTTPRaw& raw = _server.raw();
+
+    if (raw.status == RAW_START) {
+        // raw.totalSize is 0 at this point; use the Content-Length header instead.
+        size_t fwSize = (size_t)_server.clientContentLength();
+        if (fwSize == 0) fwSize = UPDATE_SIZE_UNKNOWN;
+        Debug.tracef("OTA begin: %d bytes", fwSize);
+        if (!Update.begin(fwSize, U_FLASH)) {
+            Debug.tracef("OTA begin failed: %s", Update.errorString());
+        }
+    } else if (raw.status == RAW_WRITE) {
+        if (Update.write(raw.buf, raw.currentSize) != raw.currentSize) {
+            Debug.tracef("OTA write failed: %s", Update.errorString());
+        }
+    } else if (raw.status == RAW_END) {
+        if (Update.end(true)) {
+            Debug.trace("OTA image received, validating...");
+        } else {
+            Debug.tracef("OTA end failed: %s", Update.errorString());
+        }
+    }
+}
+
+void WebPortal::handleOtaComplete() {
+    if (Update.hasError()) {
+        _server.sendHeader("Connection", "close");
+        _server.send(500, "text/plain", Update.errorString());
+        Debug.tracef("OTA failed: %s", Update.errorString());
+    } else {
+        _server.sendHeader("Connection", "close");
+        _server.send(200, "text/plain", "OK");
+        Debug.trace("OTA success, rebooting in 100ms");
+        delay(100);
+        ESP.restart();
+    }
 }
 
 void WebPortal::handleNotFound() {

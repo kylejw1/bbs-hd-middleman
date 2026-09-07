@@ -1,4 +1,5 @@
 #include "SerialBridge.h"
+#include "DebugLog.h"
 
 SerialBridge Bridge;
 
@@ -12,6 +13,7 @@ SerialBridge::SerialBridge()
     , _controllerBufLen(0)
     , _lastControllerByteMs(0)
     , _lastDisplayOpcode(0)
+    , _configVersion(BBS_FW_CONFIG_VERSION)
     , _queuedCount(0)
 {
 }
@@ -36,6 +38,10 @@ void SerialBridge::begin() {
                   CONTROLLER_UART_NUM, CONTROLLER_RX_PIN, CONTROLLER_TX_PIN,
                   DISPLAY_UART_NUM, DISPLAY_RX_PIN, DISPLAY_TX_PIN,
                   BAFANG_BAUD_RATE);
+    Debug.tracef("Bridge initialized: UART%d (Ctrl RX=%d, TX=%d), UART%d (Disp RX=%d, TX=%d), %d baud",
+                 CONTROLLER_UART_NUM, CONTROLLER_RX_PIN, CONTROLLER_TX_PIN,
+                 DISPLAY_UART_NUM, DISPLAY_RX_PIN, DISPLAY_TX_PIN,
+                 BAFANG_BAUD_RATE);
 }
 
 BridgeState SerialBridge::getState() const {
@@ -44,6 +50,10 @@ BridgeState SerialBridge::getState() const {
 
 bool SerialBridge::isInterceptActive() const {
     return _state == BridgeState::CONFIG_INTERCEPT;
+}
+
+uint8_t SerialBridge::getConfigVersion() const {
+    return _configVersion;
 }
 
 void SerialBridge::process() {
@@ -68,6 +78,7 @@ void SerialBridge::processDisplayRxPassThrough() {
         uint8_t byteVal = (uint8_t)b;
         _lastDisplayByteMs = millis();
         Telemetry.recordDisplayRx(1);
+        Debug.traceByte(TraceDir::DisplayRx, byteVal);
 
         if (_displayBufLen < sizeof(_displayBuf)) {
             _displayBuf[_displayBufLen++] = byteVal;
@@ -77,6 +88,7 @@ void SerialBridge::processDisplayRxPassThrough() {
         _controllerSerial.write(byteVal);
         Telemetry.recordControllerTx(1);
         Telemetry.recordForward();
+        Debug.traceByte(TraceDir::ControllerTx, byteVal);
 
         // Check if we have received a complete known display packet
         if (_displayBufLen >= 2 && _displayBuf[0] == REQUEST_TYPE_BAFANG_READ) {
@@ -166,6 +178,7 @@ void SerialBridge::processControllerRxPassThrough() {
         uint8_t byteVal = (uint8_t)b;
         _lastControllerByteMs = millis();
         Telemetry.recordControllerRx(1);
+        Debug.traceByte(TraceDir::ControllerRx, byteVal);
 
         if (_controllerBufLen < sizeof(_controllerBuf)) {
             _controllerBuf[_controllerBufLen++] = byteVal;
@@ -188,6 +201,7 @@ void SerialBridge::processControllerRxPassThrough() {
 
                     Telemetry.addEvent(evtId, evtData, hasData);
                     Telemetry.recordIntercept();
+                    Debug.tracef("Event log intercepted: id=%d data=%d", evtId, evtData);
 
                     // Do NOT forward event frames to the display (prevents display confusion)
                     _controllerBufLen = 0;
@@ -206,6 +220,7 @@ void SerialBridge::processControllerRxPassThrough() {
         _displaySerial.write(byteVal);
         Telemetry.recordDisplayTx(1);
         Telemetry.recordForward();
+        Debug.traceByte(TraceDir::DisplayTx, byteVal);
 
         // Check if we can parse the response for Telemetry
         handleControllerPacket(_controllerBuf, _controllerBufLen);
@@ -276,6 +291,7 @@ void SerialBridge::processDisplayRxIntercept() {
         uint8_t byteVal = (uint8_t)b;
         _lastDisplayByteMs = millis();
         Telemetry.recordDisplayRx(1);
+        Debug.traceByte(TraceDir::DisplayRx, byteVal);
 
         if (_displayBufLen < sizeof(_displayBuf)) {
             _displayBuf[_displayBufLen++] = byteVal;
@@ -405,6 +421,7 @@ void SerialBridge::synthesizeDisplayResponse(uint8_t opcode) {
     if (respLen > 0) {
         _displaySerial.write(resp, respLen);
         Telemetry.recordDisplayTx(respLen);
+        Debug.traceBytes(TraceDir::DisplayTx, resp, respLen);
     }
 }
 
@@ -421,6 +438,31 @@ void SerialBridge::flushQueuedDisplayWrites() {
 // CONTROLLER CONFIG TRANSACTIONS
 // -----------------------------------------------------------------------------
 
+bool SerialBridge::receiveController(uint8_t* buf, size_t len, uint32_t timeoutMs) {
+    size_t received = 0;
+    uint32_t startMs = millis();
+
+    while (received < len && (millis() - startMs) < timeoutMs) {
+        // Keep servicing Display so it never times out during long transfers!
+        processDisplayRxIntercept();
+
+        while (_controllerSerial.available()) {
+            buf[received++] = (uint8_t)_controllerSerial.read();
+            Telemetry.recordControllerRx(1);
+            Debug.traceByte(TraceDir::ControllerRx, buf[received - 1]);
+            if (received >= len) break;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+
+    if (received < len) {
+        Debug.tracef("Controller timeout: got %d of %d bytes", received, len);
+        return false;
+    }
+    return true;
+}
+
 bool SerialBridge::sendAndReceiveController(const uint8_t* txBuf, size_t txLen, uint8_t* rxBuf, size_t expectedLen, uint32_t timeoutMs) {
     // Flush stale data from controller RX
     while (_controllerSerial.available()) {
@@ -430,29 +472,18 @@ bool SerialBridge::sendAndReceiveController(const uint8_t* txBuf, size_t txLen, 
     // Send request
     _controllerSerial.write(txBuf, txLen);
     Telemetry.recordControllerTx(txLen);
+    Debug.traceBytes(TraceDir::ControllerTx, txBuf, txLen);
 
-    size_t received = 0;
-    uint32_t startMs = millis();
-
-    while (received < expectedLen && (millis() - startMs) < timeoutMs) {
-        // Keep servicing Display so it never times out during long transfers!
-        processDisplayRxIntercept();
-
-        while (_controllerSerial.available()) {
-            rxBuf[received++] = (uint8_t)_controllerSerial.read();
-            Telemetry.recordControllerRx(1);
-            if (received >= expectedLen) break;
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
-
-    if (received < expectedLen) {
-        Serial.printf("[Bridge] Timeout waiting for controller! Got %d of %d bytes\n", received, expectedLen);
+    if (!receiveController(rxBuf, expectedLen, timeoutMs)) {
+        Serial.printf("[Bridge] Timeout waiting for controller response (%d bytes expected)\n", expectedLen);
         return false;
     }
 
-    return verifyChecksum(rxBuf, expectedLen);
+    bool checksumOk = verifyChecksum(rxBuf, expectedLen);
+    if (!checksumOk) {
+        Debug.tracef("Controller response checksum mismatch (len=%d)", expectedLen);
+    }
+    return checksumOk;
 }
 
 bool SerialBridge::readFirmwareInfo(uint8_t& major, uint8_t& minor, uint8_t& patch, uint8_t& cfgVer, ControllerType& ctrlType, uint32_t timeoutMs) {
@@ -486,7 +517,11 @@ bool SerialBridge::readFirmwareInfo(uint8_t& major, uint8_t& minor, uint8_t& pat
     }
 
     if (ok) {
+        _configVersion = cfgVer;
         Telemetry.updateFirmwareInfo(major, minor, patch, cfgVer, ctrlType);
+        Debug.tracef("FW info: %s v%d.%d.%d (cfg v%d)", getControllerTypeName(ctrlType), major, minor, patch, cfgVer);
+    } else {
+        Debug.trace("readFirmwareInfo FAILED: no response");
     }
 
     flushQueuedDisplayWrites();
@@ -496,28 +531,68 @@ bool SerialBridge::readFirmwareInfo(uint8_t& major, uint8_t& minor, uint8_t& pat
 }
 
 bool SerialBridge::readConfig(BbsFwConfigV5& config, uint32_t timeoutMs) {
-    if (xSemaphoreTake(_bridgeMutex, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    if (xSemaphoreTake(_bridgeMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        Debug.trace("readConfig: mutex acquire failed");
+        return false;
+    }
 
+    Debug.trace("Entering CONFIG_INTERCEPT for readConfig");
     _state = BridgeState::CONFIG_INTERCEPT;
     delay(BUS_QUIET_TIME_MS);
 
     uint8_t req[3] = { REQUEST_TYPE_READ, OPCODE_READ_CONFIG, 0 };
     req[2] = computeChecksum(req, 2);
 
-    // Expected: 4 bytes header (req, opcode, version, len) + 154 bytes + 1 byte checksum = 159 bytes
-    const size_t expectedLen = 4 + BBS_FW_CONFIG_V5_SIZE + 1;
-    uint8_t resp[expectedLen];
+    // Flush stale data from controller RX, then send request
+    while (_controllerSerial.available()) {
+        _controllerSerial.read();
+    }
+    _controllerSerial.write(req, 3);
+    Telemetry.recordControllerTx(3);
+    Debug.traceBytes(TraceDir::ControllerTx, req, 3);
 
-    bool ok = sendAndReceiveController(req, 3, resp, expectedLen, timeoutMs);
+    // Phase 1: read the 4-byte header (req, opcode, version, length) so we know
+    // how many payload bytes to expect before we commit to a fixed-length receive.
+    uint8_t frame[4 + BBS_FW_CONFIG_V5_SIZE + 1]; // max possible V5 frame = 159 bytes
+    bool ok = receiveController(frame, 4, timeoutMs);
 
-    if (ok) {
-        uint8_t ver = resp[2];
-        uint8_t len = resp[3];
-        if (ver == BBS_FW_CONFIG_VERSION && len == BBS_FW_CONFIG_V5_SIZE) {
-            memcpy(&config, resp + 4, sizeof(BbsFwConfigV5));
-            Telemetry.addEvent(2, 0, false); // EVT_MSG_CONFIG_READ_DONE
+    if (!ok) {
+        Debug.trace("readConfig FAILED: no header response");
+    } else {
+        uint8_t ver = frame[2];
+        uint8_t len = frame[3];
+        _configVersion = ver;
+        Debug.tracef("readConfig header: ver=%d len=%d", ver, len);
+
+        bool knownLen = (ver == BBS_FW_CONFIG_VERSION && len == BBS_FW_CONFIG_V5_SIZE) ||
+                        (ver == BBS_FW_CONFIG_VERSION_4 && len == BBS_FW_CONFIG_V4_SIZE);
+        size_t total = 4 + (size_t)len + 1; // header + payload + checksum
+
+        // Phase 2: read the config payload + trailing checksum byte into the same
+        // contiguous buffer so verifyChecksum works over the full original frame.
+        if (knownLen && total <= sizeof(frame)) {
+            ok = receiveController(frame + 4, (size_t)len + 1, timeoutMs);
+            if (ok) {
+                ok = verifyChecksum(frame, total);
+                if (ok) {
+                    if (ver == BBS_FW_CONFIG_VERSION_4) {
+                        BbsFwConfigV4 v4;
+                        memcpy(&v4, frame + 4, BBS_FW_CONFIG_V4_SIZE);
+                        convertConfigV4toV5(v4, config);
+                    } else {
+                        memcpy(&config, frame + 4, BBS_FW_CONFIG_V5_SIZE);
+                    }
+                    Telemetry.addEvent(2, 0, false); // EVT_MSG_CONFIG_READ_DONE
+                    Debug.tracef("readConfig OK: ver=%d len=%d", ver, len);
+                } else {
+                    Debug.trace("readConfig FAILED: checksum mismatch");
+                }
+            } else {
+                Debug.tracef("readConfig FAILED: payload timeout (ver=%d len=%d)", ver, len);
+            }
         } else {
-            Serial.printf("[Bridge] Config version mismatch: ver=%d, len=%d\n", ver, len);
+            Serial.printf("[Bridge] Config version unsupported: ver=%d, len=%d\n", ver, len);
+            Debug.tracef("readConfig FAILED: unsupported version/length (ver=%d, len=%d)", ver, len);
             ok = false;
         }
     }
@@ -529,20 +604,39 @@ bool SerialBridge::readConfig(BbsFwConfigV5& config, uint32_t timeoutMs) {
 }
 
 bool SerialBridge::writeConfig(const BbsFwConfigV5& config, uint32_t timeoutMs) {
-    if (xSemaphoreTake(_bridgeMutex, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    if (xSemaphoreTake(_bridgeMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        Debug.trace("writeConfig: mutex acquire failed");
+        return false;
+    }
 
+    Debug.trace("Entering CONFIG_INTERCEPT for writeConfig");
     _state = BridgeState::CONFIG_INTERCEPT;
     delay(BUS_QUIET_TIME_MS);
 
     // Frame: 0x02, 0xf1, version, len, ...config bytes..., checksum
-    const size_t txLen = 4 + BBS_FW_CONFIG_V5_SIZE + 1;
-    uint8_t txBuf[txLen];
+    // Frame the write in the controller's own config version: V4 (152 bytes) if the
+    // controller predates the pretension fields, else V5 (154 bytes).
+    uint8_t ver;
+    size_t cfgSize;
+    uint8_t txBuf[4 + BBS_FW_CONFIG_V5_SIZE + 1]; // max V5 frame
 
+    if (_configVersion == BBS_FW_CONFIG_VERSION_4) {
+        BbsFwConfigV4 v4;
+        convertConfigV5toV4(config, v4);
+        ver = BBS_FW_CONFIG_VERSION_4;
+        cfgSize = BBS_FW_CONFIG_V4_SIZE;
+        memcpy(txBuf + 4, &v4, BBS_FW_CONFIG_V4_SIZE);
+    } else {
+        ver = BBS_FW_CONFIG_VERSION;
+        cfgSize = BBS_FW_CONFIG_V5_SIZE;
+        memcpy(txBuf + 4, &config, BBS_FW_CONFIG_V5_SIZE);
+    }
+
+    const size_t txLen = 4 + cfgSize + 1;
     txBuf[0] = REQUEST_TYPE_WRITE;
     txBuf[1] = OPCODE_WRITE_CONFIG;
-    txBuf[2] = BBS_FW_CONFIG_VERSION;
-    txBuf[3] = BBS_FW_CONFIG_V5_SIZE;
-    memcpy(txBuf + 4, &config, sizeof(BbsFwConfigV5));
+    txBuf[2] = ver;
+    txBuf[3] = (uint8_t)cfgSize;
     txBuf[txLen - 1] = computeChecksum(txBuf, txLen - 1);
 
     // Controller response: 0x02, 0xf1, result, checksum (4 bytes)
@@ -553,8 +647,13 @@ bool SerialBridge::writeConfig(const BbsFwConfigV5& config, uint32_t timeoutMs) 
         bool success = (resp[2] != 0);
         if (success) {
             Telemetry.addEvent(4, 0, false); // EVT_MSG_CONFIG_WRITE_DONE
+            Debug.tracef("writeConfig OK (ver=%d)", ver);
+        } else {
+            Debug.trace("writeConfig FAILED: controller returned status=0");
         }
         ok = success;
+    } else {
+        Debug.trace("writeConfig FAILED: no valid response");
     }
 
     flushQueuedDisplayWrites();

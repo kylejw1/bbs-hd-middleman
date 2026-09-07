@@ -11,6 +11,7 @@
 #include "BbsFwProtocol.h"
 #include "Telemetry.h"
 #include "SerialBridge.h"
+#include "DebugLog.h"
 #include "WebContent.h"
 
 class WebPortal {
@@ -45,6 +46,9 @@ private:
     void handleCmdLights();
     void handleWifiConfig();
     void handleInfo();
+    void handleSerialTrace();
+    void handleOtaComplete();
+    void handleOtaUpload();
     void handleNotFound();
 };
 

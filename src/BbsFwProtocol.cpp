@@ -1,5 +1,30 @@
 #include "BbsFwProtocol.h"
 
+// Compile-time guards: struct packing/size drift would corrupt the controller EEPROM
+// (AGENTS.md rule #1). Fail the build loudly if these ever move.
+static_assert(sizeof(BbsFwConfigV5) == BBS_FW_CONFIG_V5_SIZE, "BbsFwConfigV5 size changed");
+static_assert(sizeof(BbsFwConfigV4) == BBS_FW_CONFIG_V4_SIZE, "BbsFwConfigV4 size changed");
+static_assert(sizeof(AssistLevel) == 6, "AssistLevel size changed");
+
+void convertConfigV4toV5(const BbsFwConfigV4& src, BbsFwConfigV5& dst) {
+    uint8_t* d = reinterpret_cast<uint8_t*>(&dst);
+    const uint8_t* s = reinterpret_cast<const uint8_t*>(&src);
+    // Fields before the pretension gap: use_freedom_units .. lights_mode (12 bytes)
+    memcpy(d, s, 12);
+    // Pretension was hardcoded OFF in v4
+    dst.use_pretension = 0;
+    dst.pretension_speed_cutoff_kph = 0;
+    // Fields after the gap: wheel_size .. sport_levels (140 bytes)
+    memcpy(d + 14, s + 12, 140);
+}
+
+void convertConfigV5toV4(const BbsFwConfigV5& src, BbsFwConfigV4& dst) {
+    uint8_t* d = reinterpret_cast<uint8_t*>(&dst);
+    const uint8_t* s = reinterpret_cast<const uint8_t*>(&src);
+    memcpy(d, s, 12);                 // use_freedom_units .. lights_mode
+    memcpy(d + 12, s + 14, 140);      // wheel_size .. sport_levels (skip pretension)
+}
+
 void initDefaultBbsHdConfig(BbsFwConfigV5& cfg) {
     memset(&cfg, 0, sizeof(BbsFwConfigV5));
 
@@ -166,6 +191,10 @@ bool serializeConfigToJson(const BbsFwConfigV5& cfg, JsonDocument& doc) {
 }
 
 bool deserializeConfigFromJson(const JsonDocument& doc, BbsFwConfigV5& cfg) {
+    // Zero the struct first so fields absent from the JSON (e.g. pretension on a
+    // version-5 write) are deterministic instead of uninitialized stack garbage.
+    memset(&cfg, 0, sizeof(BbsFwConfigV5));
+
     if (doc["maxCurrent"].is<uint8_t>()) {
         cfg.max_current_amps = doc["maxCurrent"];
     }

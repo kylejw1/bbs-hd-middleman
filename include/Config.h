@@ -60,4 +60,7 @@
 // Maximum event log entries stored in RAM
 #define MAX_EVENT_LOG_ENTRIES   60
 
+// Firmware version string (displayed in web UI and used for OTA validation)
+#define FW_VERSION              "1.0.1"
+
 #endif // CONFIG_H

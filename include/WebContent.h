@@ -90,6 +90,25 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
 .log-error { color: #f87171; }
 .toast { position: fixed; bottom: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; background: var(--bg-card); border: 1px solid var(--border); color: var(--text-main); box-shadow: 0 10px 15px -3px rgba(0,0,0,0.5); z-index: 100; opacity: 0; transform: translateY(20px); transition: 0.3s; pointer-events: none; }
 .toast.show { opacity: 1; transform: translateY(0); }
+
+/* Debug Console */
+.debug-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+.debug-toggle { padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-card-alt); color: var(--text-main); font-size: 0.75rem; font-weight: 600; cursor: pointer; transition: 0.2s; }
+.debug-toggle:hover { background: #475569; }
+.debug-toggle.on { background: rgba(6, 182, 212, 0.2); border-color: var(--accent-cyan); color: var(--accent-cyan); }
+.terminal { background: #060a12; border: 1px solid var(--border); border-radius: 8px; height: 520px; overflow-y: auto; padding: 10px 12px; font-family: "SF Mono", "Cascadia Code", Menlo, Consolas, monospace; font-size: 0.78rem; line-height: 1.45; }
+.tline { display: flex; gap: 8px; white-space: nowrap; padding: 0.5px 0; }
+.tline:hover { background: rgba(255,255,255,0.04); }
+.t-time { color: #475569; flex-shrink: 0; }
+.t-dir { flex-shrink: 0; width: 96px; font-weight: 700; text-align: right; }
+.t-hex { color: #cbd5e1; letter-spacing: 0.5px; }
+.t-ascii { color: #526072; }
+.t-drx { color: #34d399; }
+.t-dtx { color: #22d3ee; }
+.t-crx { color: #fbbf24; }
+.t-ctx { color: #fb7185; }
+.t-sys { color: #94a3b8; }
+.t-dropped { color: var(--accent-rose); font-weight: 700; }
 </style>
 </head>
 <body>
@@ -116,6 +135,8 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
   <button onclick="switchTab('tab-sensors')">Sensors & Features</button>
   <button onclick="switchTab('tab-calibrate')">Calibration & Tools</button>
   <button onclick="switchTab('tab-events')">Live Event Log</button>
+  <button onclick="switchTab('tab-debug')">Debug Console</button>
+  <button onclick="switchTab('tab-firmware')">Firmware Update</button>
   <button onclick="switchTab('tab-pinout')">ESP32 Pinout</button>
 </nav>
 
@@ -487,6 +508,54 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
     </div>
   </div>
 
+  <!-- TAB: DEBUG CONSOLE -->
+  <div id="tab-debug" class="tab-content">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Serial Port Debug Console</span>
+        <span id="debug-stats" style="font-size:0.75rem; color:var(--text-muted);">0 events</span>
+      </div>
+      <div class="debug-toolbar">
+        <button class="debug-toggle on" id="btn-pause" onclick="toggleDebugPause()">Running</button>
+        <button class="debug-toggle on" id="btn-autoscroll" onclick="toggleDebugAutoscroll()">Auto-scroll</button>
+        <button class="btn btn-secondary" style="padding:4px 10px;font-size:0.75rem;" onclick="clearDebugConsole()">Clear</button>
+        <span style="font-size:0.75rem;color:var(--text-muted);">Filter:</span>
+        <button class="debug-toggle on" id="f-drx" onclick="toggleDebugFilter('drx')">DISP→</button>
+        <button class="debug-toggle on" id="f-dtx" onclick="toggleDebugFilter('dtx')">→DISP</button>
+        <button class="debug-toggle on" id="f-crx" onclick="toggleDebugFilter('crx')">CTRL→</button>
+        <button class="debug-toggle on" id="f-ctx" onclick="toggleDebugFilter('ctx')">→CTRL</button>
+        <button class="debug-toggle on" id="f-sys" onclick="toggleDebugFilter('sys')">SYS</button>
+      </div>
+      <div class="terminal" id="terminal"></div>
+    </div>
+  </div>
+
+  <!-- TAB: FIRMWARE UPDATE -->
+  <div id="tab-firmware" class="tab-content">
+    <div class="card">
+      <h3 class="card-title" style="margin-bottom:14px;">Firmware Update</h3>
+      <p style="margin-bottom:12px; color:var(--text-muted);">
+        Current firmware: <strong id="fw-version">...</strong> built <strong id="fw-build">...</strong>
+      </p>
+      <div class="form-group">
+        <label>Select firmware .bin file</label>
+        <input type="file" id="fw-file" accept=".bin" class="form-control" style="padding:8px;">
+      </div>
+      <div id="ota-progress-wrapper" style="display:none; margin:12px 0;">
+        <div class="bar-track" style="height:14px;">
+          <div class="bar-fill fill-cyan" id="ota-progress-bar" style="width:0%;"></div>
+        </div>
+        <p id="ota-progress-text" style="font-size:0.8rem; color:var(--text-muted); margin-top:6px;">0%</p>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-primary" id="btn-ota-upload" onclick="startOtaUpload()">Upload Firmware</button>
+      </div>
+      <p style="font-size:0.75rem; color:var(--text-muted); margin-top:12px;">
+        The device will reboot after a successful update. Reconnect to the Wi-Fi access point after ~10 seconds.
+      </p>
+    </div>
+  </div>
+
   <!-- TAB: ESP32 PINOUT & SCHEMATIC -->
   <div id="tab-pinout" class="tab-content">
     <div class="card">
@@ -540,6 +609,10 @@ function switchTab(tabId) {
     if (!activeConfig) fetchConfigFromController();
   } else {
     banner.style.display = 'none';
+  }
+
+  if (tabId === 'tab-firmware') {
+    fetchFirmwareInfo();
   }
 }
 
@@ -898,6 +971,247 @@ function importJsonFile(evt) {
     }
   };
   reader.readAsText(file);
+}
+
+// ---------- Debug Console ----------
+let lastTraceSeq = 0;
+let tracePaused = false;
+let traceAutoscroll = true;
+let traceFilters = { drx: true, dtx: true, crx: true, ctx: true, sys: true };
+const dirLabels = { drx: 'DISP→MCU', dtx: 'MCU→DISP', crx: 'CTRL→MCU', ctx: 'MCU→CTRL', sys: 'SYSTEM' };
+const dirCls = { drx: 't-drx', dtx: 't-dtx', crx: 't-crx', ctx: 't-ctx', sys: 't-sys' };
+const MAX_TERMINAL_LINES = 400;
+
+function bytesToHex(bytes) {
+  let h = '';
+  for (let i = 0; i < bytes.length; ++i) {
+    h += ' ' + bytes[i].toString(16).toUpperCase().padStart(2, '0');
+  }
+  return h.trim();
+}
+
+function bytesToAscii(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; ++i) {
+    const c = bytes[i];
+    s += (c >= 32 && c < 127) ? String.fromCharCode(c) : '.';
+  }
+  return s;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function formatMs(ms) {
+  const sec = Math.floor(ms / 1000);
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  const r = ms % 1000;
+  return m + ':' + s.toString().padStart(2, '0') + '.' + r.toString().padStart(3, '0');
+}
+
+function appendTerminalLine(html, cls) {
+  const term = document.getElementById('terminal');
+  const div = document.createElement('div');
+  div.className = 'tline' + (cls ? ' ' + cls : '');
+  div.innerHTML = html;
+  term.appendChild(div);
+
+  // Trim old lines
+  while (term.children.length > MAX_TERMINAL_LINES) {
+    term.removeChild(term.firstChild);
+  }
+
+  if (traceAutoscroll && !tracePaused) {
+    term.scrollTop = term.scrollHeight;
+  }
+}
+
+function toggleDebugPause() {
+  tracePaused = !tracePaused;
+  const btn = document.getElementById('btn-pause');
+  btn.textContent = tracePaused ? 'Paused' : 'Running';
+  btn.classList.toggle('on', !tracePaused);
+}
+
+function toggleDebugAutoscroll() {
+  traceAutoscroll = !traceAutoscroll;
+  const btn = document.getElementById('btn-autoscroll');
+  btn.classList.toggle('on', traceAutoscroll);
+}
+
+function toggleDebugFilter(dir) {
+  traceFilters[dir] = !traceFilters[dir];
+  const btn = document.getElementById('f-' + dir);
+  btn.classList.toggle('on', traceFilters[dir]);
+}
+
+function clearDebugConsole() {
+  document.getElementById('terminal').innerHTML = '';
+  lastTraceSeq = 0;
+}
+
+// Group consecutive byte events of the same direction into single lines
+function renderTraceEvents(bytes, texts) {
+  // Merge and sort by sequence number
+  const all = [];
+  bytes.forEach(b => { if (traceFilters[b.d]) all.push({...b, kind: 'b'}); });
+  texts.forEach(t => { if (traceFilters.sys) all.push({...t, kind: 't'}); });
+  all.sort((a, b) => a.s - b.s);
+
+  // Group consecutive byte events by direction
+  let group = null;
+  for (let i = 0; i < all.length; ++i) {
+    const evt = all[i];
+    if (evt.kind === 't') {
+      // Flush any pending byte group
+      if (group) {
+        const hex = bytesToHex(group.bytes);
+        const asc = bytesToAscii(group.bytes);
+        const tag = group.dir;
+        const ln = '<span class="t-time">' + formatMs(group.startTs) + '</span>'
+          + '<span class="t-dir ' + dirCls[tag] + '">' + dirLabels[tag] + '</span>'
+          + '<span class="t-hex">' + hex + '</span>'
+          + '  <span class="t-ascii">|' + asc + '|</span>';
+        appendTerminalLine(ln, 't-' + tag);
+        group = null;
+      }
+      // Render text event
+      const ln = '<span class="t-time">' + formatMs(evt.t) + '</span>'
+        + '<span class="t-dir t-sys">SYSTEM</span>'
+        + '<span style="color:#94a3b8;">' + escapeHtml(evt.msg) + '</span>';
+      appendTerminalLine(ln, 't-sys');
+    } else {
+      // Byte event
+      if (!group || group.dir !== evt.d) {
+        // Flush old group
+        if (group) {
+          const hex = bytesToHex(group.bytes);
+          const asc = bytesToAscii(group.bytes);
+          const tag = group.dir;
+          const ln = '<span class="t-time">' + formatMs(group.startTs) + '</span>'
+            + '<span class="t-dir ' + dirCls[tag] + '">' + dirLabels[tag] + '</span>'
+            + '<span class="t-hex">' + hex + '</span>'
+            + '  <span class="t-ascii">|' + asc + '|</span>';
+          appendTerminalLine(ln, 't-' + tag);
+        }
+        // Start new group
+        group = { dir: evt.d, startTs: evt.t, bytes: [evt.b] };
+      } else {
+        group.bytes.push(evt.b);
+      }
+    }
+  }
+  // Flush final group
+  if (group) {
+    const hex = bytesToHex(group.bytes);
+    const asc = bytesToAscii(group.bytes);
+    const tag = group.dir;
+    const ln = '<span class="t-time">' + formatMs(group.startTs) + '</span>'
+      + '<span class="t-dir ' + dirCls[tag] + '">' + dirLabels[tag] + '</span>'
+      + '<span class="t-hex">' + hex + '</span>'
+      + '  <span class="t-ascii">|' + asc + '|</span>';
+    appendTerminalLine(ln, 't-' + tag);
+  }
+}
+
+async function pollSerialTrace() {
+  if (tracePaused) return;
+  try {
+    const url = '/api/serial-trace?after=' + lastTraceSeq;
+    const res = await fetch(url);
+    if (!res.ok) return;
+    const data = await res.json();
+
+    const nBytes = (data.bytes || []).length;
+    const nTexts = (data.texts || []).length;
+
+    if (nBytes > 0 || nTexts > 0) {
+      renderTraceEvents(data.bytes || [], data.texts || []);
+    }
+
+    if (data.seq !== undefined) {
+      lastTraceSeq = data.seq;
+    }
+
+    // Show stats
+    const term = document.getElementById('terminal');
+    const statsEl = document.getElementById('debug-stats');
+    statsEl.innerText = term.children.length + ' lines' + (data.dropped > 0 ? ' (' + data.dropped + ' dropped)' : '');
+  } catch (e) {}
+}
+setInterval(pollSerialTrace, 300);
+
+// ---------- Firmware Update ----------
+async function fetchFirmwareInfo() {
+  try {
+    const res = await fetch('/api/info');
+    const info = await res.json();
+    document.getElementById('fw-version').textContent = info.fwVersion || 'unknown';
+    document.getElementById('fw-build').textContent = info.fwBuild || 'unknown';
+  } catch(e) {}
+}
+
+function startOtaUpload() {
+  const fileInput = document.getElementById('fw-file');
+  const file = fileInput.files[0];
+  if (!file) {
+    showToast('Please select a firmware .bin file first');
+    return;
+  }
+
+  if (!file.name.endsWith('.bin')) {
+    showToast('Only .bin firmware files are accepted');
+    return;
+  }
+
+  const btn = document.getElementById('btn-ota-upload');
+  btn.disabled = true;
+  btn.textContent = 'Uploading...';
+
+  const progressWrapper = document.getElementById('ota-progress-wrapper');
+  const progressBar = document.getElementById('ota-progress-bar');
+  const progressText = document.getElementById('ota-progress-text');
+  progressWrapper.style.display = 'block';
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/update', true);
+
+  xhr.upload.onprogress = function(e) {
+    if (e.lengthComputable) {
+      const pct = Math.round((e.loaded / e.total) * 100);
+      progressBar.style.width = pct + '%';
+      progressText.textContent = pct + '% (' + formatSize(e.loaded) + ' / ' + formatSize(e.total) + ')';
+    }
+  };
+
+  xhr.onload = function() {
+    if (xhr.status === 200) {
+      showToast('Update complete! Device is rebooting, reconnect in ~10 seconds.');
+      progressText.textContent = 'Done! Rebooting...';
+    } else {
+      showToast('Update failed: ' + (xhr.responseText || 'Unknown error'));
+      progressText.textContent = 'Failed';
+      btn.disabled = false;
+      btn.textContent = 'Upload Firmware';
+    }
+  };
+
+  xhr.onerror = function() {
+    showToast('Network error during upload');
+    progressText.textContent = 'Network error';
+    btn.disabled = false;
+    btn.textContent = 'Upload Firmware';
+  };
+
+  xhr.send(file);
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1048576).toFixed(1) + ' MB';
 }
 
 function openWifiModal() {
