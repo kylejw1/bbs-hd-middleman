@@ -91,10 +91,10 @@ To build this setup, you need:
              GPIO 5 -| [ 5]                             [40] |- GPIO 2
              GPIO 6 -| [ 6]                             [39] |- GPIO 42
              GPIO 7 -| [ 7]                             [38] |- GPIO 41
-   DISPLAY_TX -> 15 -| [ 8]                             [37] |- GPIO 40
-   DISPLAY_RX -> 16 -| [ 9]                             [36] |- GPIO 39
-CONTROLLER_TX -> 17 -| [10]                             [35] |- GPIO 38
-CONTROLLER_RX -> 18 -| [11]                             [34] |- GPIO 37
+   DISPLAY_RX -> 15 -| [ 8]                             [37] |- GPIO 40
+   DISPLAY_TX -> 16 -| [ 9]                             [36] |- GPIO 39
+CONTROLLER_RX -> 17 -| [10]                             [35] |- GPIO 38
+CONTROLLER_TX -> 18 -| [11]                             [34] |- GPIO 37
              GPIO 8 -| [12]                             [33] |- GPIO 36
              GPIO 3 -| [13]                             [32] |- GPIO 35
             GPIO 46 -| [14]                             [31] |- GPIO 0
@@ -128,11 +128,11 @@ CONTROLLER_RX -> 18 -| [11]                             [34] |- GPIO 37
 
   Pin 3 (P+ Lock) -----------------------------------------> Pin 3 (P+ Lock)
 
-  Pin 4 (Controller RX) <--- [Shifter HV1 <-> LV1] <--- ESP32 GPIO 17 (TX1)
-  Pin 5 (Controller TX) ---> [Shifter HV2 <-> LV2] ---> ESP32 GPIO 18 (RX1)
+  Pin 4 (Controller RX) <--- [Shifter HV1 <-> LV1] <--- ESP32 GPIO 18 (TX1)
+  Pin 5 (Controller TX) ---> [Shifter HV2 <-> LV2] ---> ESP32 GPIO 17 (RX1)
 
-  Pin 4 (Display TX)    ---> [Shifter HV3 <-> LV3] ---> ESP32 GPIO 16 (RX2)
-  Pin 5 (Display RX)    <--- [Shifter HV4 <-> LV4] <--- ESP32 GPIO 15 (TX2)
+  Pin 4 (Display TX)    ---> [Shifter HV3 <-> LV3] ---> ESP32 GPIO 15 (RX2)
+  Pin 5 (Display RX)    <--- [Shifter HV4 <-> LV4] <--- ESP32 GPIO 16 (TX2)
 ```
 
 ---
@@ -197,8 +197,8 @@ CONTROLLER_RX -> 18 -| [11]                             [34] |- GPIO 37
 #### The display shows "Error 30" (Communication Error)
 * **Check Level Shifter Ground**: The ESP32 ground, level shifter ground, and Bafang ground must all be tied together.
 * **Check TX/RX crossover**:
-  * ESP32 `GPIO 17` (TX) goes to Controller Pin 4 (RX).
-  * ESP32 `GPIO 18` (RX) goes to Controller Pin 5 (TX).
+  * ESP32 `GPIO 18` (TX) goes to Controller Pin 4 (RX).
+  * ESP32 `GPIO 17` (RX) goes to Controller Pin 5 (TX).
   * If in doubt, try swapping Pin 4 and Pin 5 on one of the sides.
 
 #### The ESP32 doesn't turn on when I turn on the display

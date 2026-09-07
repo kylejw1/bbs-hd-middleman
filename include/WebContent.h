@@ -571,10 +571,10 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
         </ul>
         <p><strong>ESP32-S3 Pin Mapping (via 5V &harr; 3.3V Logic Level Shifter):</strong></p>
         <ul style="margin:8px 0 16px 24px;">
-          <li><strong>Controller RX (GPIO 18)</strong> &larr; Controller TXD (Pin 5 on motor cable)</li>
-          <li><strong>Controller TX (GPIO 17)</strong> &rarr; Controller RXD (Pin 4 on motor cable)</li>
-          <li><strong>Display RX (GPIO 16)</strong> &larr; Display TXD (Pin 4 on display cable)</li>
-          <li><strong>Display TX (GPIO 15)</strong> &rarr; Display RXD (Pin 5 on display cable)</li>
+          <li><strong>Controller RX (GPIO 17)</strong> &larr; Controller TXD (Pin 5 on motor cable)</li>
+          <li><strong>Controller TX (GPIO 18)</strong> &rarr; Controller RXD (Pin 4 on motor cable)</li>
+          <li><strong>Display RX (GPIO 15)</strong> &larr; Display TXD (Pin 4 on display cable)</li>
+          <li><strong>Display TX (GPIO 16)</strong> &rarr; Display RXD (Pin 5 on display cable)</li>
           <li><strong>Status LED (GPIO 48)</strong> &rarr; Activity Indicator</li>
         </ul>
       </div>
