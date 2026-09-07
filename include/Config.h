@@ -13,13 +13,13 @@
 
 // Controller UART (UART1) - connects to Bafang BBS-HD controller
 #define CONTROLLER_UART_NUM     1
-#define CONTROLLER_RX_PIN       18   // Connect to Controller TX (via level shifter)
-#define CONTROLLER_TX_PIN       17   // Connect to Controller RX (via level shifter)
+#define CONTROLLER_RX_PIN       17   // Connect to Controller TX (via level shifter)
+#define CONTROLLER_TX_PIN       18   // Connect to Controller RX (via level shifter)
 
 // Display UART (UART2) - connects to Bafang HMI Display (500C, 850C, DPC-18, etc.)
 #define DISPLAY_UART_NUM        2
-#define DISPLAY_RX_PIN          16   // Connect to Display TX (via level shifter)
-#define DISPLAY_TX_PIN          15   // Connect to Display RX (via level shifter)
+#define DISPLAY_RX_PIN          15   // Connect to Display TX (via level shifter)
+#define DISPLAY_TX_PIN          16   // Connect to Display RX (via level shifter)
 
 // Optional Status / Activity LED
 #define STATUS_LED_PIN          48   // On-board RGB / status LED on ESP32-S3 DevKit
