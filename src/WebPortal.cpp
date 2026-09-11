@@ -1,11 +1,20 @@
 #include "WebPortal.h"
 #include <Update.h>
+#include <ESPmDNS.h>
 
 WebPortal Portal;
 
 WebPortal::WebPortal()
     : _server(HTTP_PORT)
     , _staConfigured(false)
+    , _wifiPhase(WifiPhase::StaConnecting)
+    , _apActive(false)
+    , _mdnsStarted(false)
+    , _pendingStaConnect(false)
+    , _staAttemptStartMs(0)
+    , _scanStartMs(0)
+    , _staDownSinceMs(0)
+    , _pendingStaConnectMs(0)
 {
 }
 
@@ -22,27 +31,182 @@ void WebPortal::setupWifi() {
     _staPass = _prefs.getString("sta_pass", "");
     _staConfigured = (_staSsid.length() > 0);
 
-    WiFi.mode(WIFI_AP_STA);
+    _apActive = false;
+    _mdnsStarted = false;
+    _pendingStaConnect = false;
+    _staDownSinceMs = 0;
+    _scanStartMs = 0;
 
-    // Start SoftAP
-    WiFi.softAP(DEFAULT_AP_SSID, DEFAULT_AP_PASS, DEFAULT_AP_CHANNEL, 0, DEFAULT_AP_MAX_CONN);
-    IPAddress apIP = WiFi.softAPIP();
-
-    // Start DNS Captive Portal server
-    _dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
-    _dnsServer.start(DNS_PORT, "*", apIP);
-
-    Serial.printf("[WebPortal] SoftAP '%s' active at IP: %s\n", DEFAULT_AP_SSID, apIP.toString().c_str());
-
-    // Connect to Station if configured
     if (_staConfigured) {
-        Serial.printf("[WebPortal] Connecting to Station Wi-Fi '%s'...\n", _staSsid.c_str());
-        WiFi.begin(_staSsid.c_str(), _staPass.c_str());
+        // Station first: the router's radio does the AP work, the ESP32 is just
+        // a client, and there is no single-radio AP+STA contention.
+        Serial.printf("[WebPortal] Station configured: '%s'\n", _staSsid.c_str());
+        startStationAttempt(false);
+    } else {
+        Serial.println("[WebPortal] No station configured; starting SoftAP");
+        requestAccessPoint();
     }
 }
 
+// Begin (or restart) a join attempt. When keepAccessPoint is true we leave the
+// SoftAP up so the caller's current web session is not interrupted; it is torn
+// down as soon as the station link comes up.
+void WebPortal::startStationAttempt(bool keepAccessPoint) {
+    if (!(keepAccessPoint && _apActive)) {
+        WiFi.mode(WIFI_STA);
+    }
+    WiFi.setSleep(false);  // no modem sleep: lowest dashboard latency
+    WiFi.begin(_staSsid.c_str(), _staPass.c_str());
+    _wifiPhase = WifiPhase::StaConnecting;
+    _staAttemptStartMs = millis();
+    Serial.printf("[WebPortal] Connecting to station '%s'...\n", _staSsid.c_str());
+}
+
+void WebPortal::startMdns() {
+    if (_mdnsStarted) {
+        MDNS.end();
+        _mdnsStarted = false;
+    }
+    if (MDNS.begin(MDNS_HOSTNAME)) {
+        MDNS.addService("http", "tcp", HTTP_PORT);
+        _mdnsStarted = true;
+        Serial.printf("[WebPortal] mDNS ready: http://%s.local/\n", MDNS_HOSTNAME);
+    } else {
+        Serial.println("[WebPortal] mDNS start failed");
+    }
+}
+
+// Ask for a fallback SoftAP. The channel scan runs asynchronously so the UART
+// bridge keeps its sub-2ms display keep-alive cadence.
+void WebPortal::requestAccessPoint() {
+    if (_apActive || _wifiPhase == WifiPhase::ApScanning) return;
+
+    WiFi.mode(WIFI_STA);            // scanning requires the station interface
+    WiFi.setSleep(false);
+    WiFi.scanNetworks(true, true);  // async: never block loop()
+    _scanStartMs = millis();
+    _wifiPhase = WifiPhase::ApScanning;
+}
+
+uint8_t WebPortal::pickBestApChannel() {
+    const uint8_t candidates[3] = {1, 6, 11};
+    uint16_t congestion[3] = {0, 0, 0};
+
+    int n = WiFi.scanComplete();
+    if (n <= 0) {
+        WiFi.scanDelete();
+        Serial.println("[WebPortal] AP channel scan empty/failed; using default");
+        return DEFAULT_AP_CHANNEL;
+    }
+
+    // Weight each candidate by every network that overlaps its 5-channel span.
+    for (int i = 0; i < n; ++i) {
+        int ch = WiFi.channel(i);
+        if (ch >= 1 && ch <= 5)  congestion[0]++;
+        if (ch >= 2 && ch <= 8)  congestion[1]++;
+        if (ch >= 7 && ch <= 13) congestion[2]++;
+    }
+    WiFi.scanDelete();
+
+    uint8_t best = 1;  // prefer channel 6 on a tie (least congested default)
+    for (uint8_t c = 0; c < 3; ++c) {
+        if (congestion[c] < congestion[best]) best = c;
+    }
+
+    Serial.printf("[WebPortal] AP channel congestion 1:%u 6:%u 11:%u -> using %u\n",
+                  (unsigned)congestion[0], (unsigned)congestion[1],
+                  (unsigned)congestion[2], (unsigned)candidates[best]);
+    return candidates[best];
+}
+
+void WebPortal::startAccessPoint(uint8_t channel) {
+    // AP_STA with an idle station keeps the door open for a later join request
+    // without paying any coexistence cost (the STA interface is not associated).
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.setSleep(false);
+    if (!WiFi.softAP(DEFAULT_AP_SSID, DEFAULT_AP_PASS, channel, 0, DEFAULT_AP_MAX_CONN)) {
+        Serial.println("[WebPortal] SoftAP start FAILED");
+    }
+
+    IPAddress apIP = WiFi.softAPIP();
+    _dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+    _dnsServer.start(DNS_PORT, "*", apIP);   // captive portal: hijack all DNS
+    _apActive = true;
+    _wifiPhase = WifiPhase::ApOnly;
+
+    startMdns();
+    Serial.printf("[WebPortal] SoftAP '%s' on channel %u at %s\n",
+                  DEFAULT_AP_SSID, (unsigned)channel, apIP.toString().c_str());
+}
+
+void WebPortal::stopAccessPoint() {
+    if (!_apActive) return;
+    _dnsServer.stop();
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    _apActive = false;
+    Serial.println("[WebPortal] SoftAP stopped (station link active)");
+}
+
 void WebPortal::process() {
-    _dnsServer.processNextRequest();
+    // Deferred Wi-Fi reconfiguration from /api/wifi: let the HTTP response flush
+    // before the radio changes underneath the client.
+    if (_pendingStaConnect && (millis() - _pendingStaConnectMs) >= 400) {
+        _pendingStaConnect = false;
+        startStationAttempt(_apActive);
+    }
+
+    switch (_wifiPhase) {
+        case WifiPhase::StaConnecting:
+            if (WiFi.status() == WL_CONNECTED) {
+                if (_apActive) stopAccessPoint();
+                _wifiPhase = WifiPhase::StaConnected;
+                _staDownSinceMs = 0;
+                startMdns();
+                Serial.printf("[WebPortal] Station connected, IP: %s\n",
+                              WiFi.localIP().toString().c_str());
+            } else if (millis() - _staAttemptStartMs >= STA_CONNECT_TIMEOUT_MS) {
+                WiFi.disconnect(true, false);  // stop retrying (and channel hopping)
+                if (_apActive) {
+                    _wifiPhase = WifiPhase::ApOnly;
+                    Serial.println("[WebPortal] Station join failed; staying on SoftAP");
+                } else {
+                    Serial.println("[WebPortal] Station join timed out; starting fallback SoftAP");
+                    requestAccessPoint();
+                }
+            }
+            break;
+
+        case WifiPhase::StaConnected:
+            if (WiFi.status() != WL_CONNECTED) {
+                if (_staDownSinceMs == 0) {
+                    _staDownSinceMs = millis();
+                } else if (millis() - _staDownSinceMs >= STA_LOST_GRACE_MS) {
+                    _staDownSinceMs = 0;
+                    Serial.println("[WebPortal] Station link lost; starting fallback SoftAP");
+                    requestAccessPoint();
+                }
+            } else {
+                _staDownSinceMs = 0;
+            }
+            break;
+
+        case WifiPhase::ApScanning:
+            if (WiFi.scanComplete() >= 0 || (millis() - _scanStartMs) >= AP_SCAN_TIMEOUT_MS) {
+                startAccessPoint(pickBestApChannel());
+            }
+            break;
+
+        case WifiPhase::ApOnly:
+            break;
+    }
+
+    // Captive portal DNS only exists while we are the access point.
+    if (_apActive) {
+        _dnsServer.processNextRequest();
+    }
+
     _server.handleClient();
 }
 
@@ -63,6 +227,8 @@ void WebPortal::setupRoutes() {
     _server.on("/api/wifi", HTTP_POST, [this]() { handleWifiConfig(); });
     _server.on("/api/info", HTTP_GET, [this]() { handleInfo(); });
     _server.on("/api/serial-trace", HTTP_GET, [this]() { handleSerialTrace(); });
+    _server.on("/api/debug", HTTP_GET, [this]() { handleDebugConfig(); });
+    _server.on("/api/debug", HTTP_POST, [this]() { handleDebugConfig(); });
 
     // OTA firmware upload
     _server.on("/update", HTTP_POST, [this]() { handleOtaComplete(); }, [this]() { handleOtaUpload(); });
@@ -103,13 +269,17 @@ void WebPortal::handleGetConfig() {
     bool ok = Bridge.readConfig(cfg, 3500);
 
     if (!ok) {
-        // Return default safe fallback config with warning flag if controller is offline
-        initDefaultBbsHdConfig(cfg);
+        // Never fabricate a config for the UI: if the controller did not answer,
+        // report the failure and leave the form fields empty.
+        _server.send(503, "application/json",
+                     "{\"success\":false,\"fromController\":false,"
+                     "\"error\":\"Controller did not respond\"}");
+        return;
     }
 
     JsonDocument doc;
     serializeConfigToJson(cfg, doc);
-    doc["fromController"] = ok;
+    doc["fromController"] = true;
 
     String jsonStr;
     serializeJson(doc, jsonStr);
@@ -242,7 +412,10 @@ void WebPortal::handleWifiConfig() {
         _staPass = pass;
         _staConfigured = true;
 
-        WiFi.begin(ssid.c_str(), pass.c_str());
+        // Defer the radio change until process() runs so this response flushes
+        // first (the SoftAP is kept up until the new link actually comes up).
+        _pendingStaConnect = true;
+        _pendingStaConnectMs = millis();
         _server.send(200, "application/json", "{\"success\":true}");
     } else {
         _server.send(400, "application/json", "{\"error\":\"Invalid SSID\"}");
@@ -259,9 +432,18 @@ void WebPortal::handleInfo() {
     doc["freeHeap"] = ESP.getFreeHeap();
     doc["flashSize"] = ESP.getFlashChipSize();
     doc["uptimeSec"] = millis() / 1000;
-    doc["wifiMode"] = (WiFi.status() == WL_CONNECTED) ? "AP+STA" : "AP_ONLY";
-    doc["staIP"] = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "Not Connected";
-    doc["apIP"] = WiFi.softAPIP().toString();
+    doc["mdnsHost"] = String(MDNS_HOSTNAME) + ".local";
+
+    bool staUp = (WiFi.status() == WL_CONNECTED);
+    if (_apActive) {
+        doc["wifiMode"] = staUp ? "AP+STA" : "AP";
+    } else if (staUp) {
+        doc["wifiMode"] = "STA";
+    } else {
+        doc["wifiMode"] = "STA_CONNECTING";
+    }
+    doc["staIP"] = staUp ? WiFi.localIP().toString() : "Not Connected";
+    doc["apIP"] = _apActive ? WiFi.softAPIP().toString() : "Off";
 
     String resp;
     serializeJson(doc, resp);
@@ -269,6 +451,14 @@ void WebPortal::handleInfo() {
 }
 
 void WebPortal::handleSerialTrace() {
+    // Tracing is off by default; return an empty payload without touching the
+    // ring buffer so an idle client cannot rack up JSON-building work.
+    if (!Debug.isEnabled()) {
+        _server.send(200, "application/json",
+                     "{\"enabled\":false,\"seq\":0,\"dropped\":0,\"bytes\":[],\"texts\":[]}");
+        return;
+    }
+
     // Optional ?after=<seq> query param for incremental polling
     uint32_t afterSeq = 0;
     if (_server.hasArg("after")) {
@@ -277,10 +467,38 @@ void WebPortal::handleSerialTrace() {
 
     JsonDocument doc;
     Debug.buildTraceJson(doc, afterSeq);
+    doc["enabled"] = true;
 
     String jsonStr;
     serializeJson(doc, jsonStr);
     _server.send(200, "application/json", jsonStr);
+}
+
+void WebPortal::handleDebugConfig() {
+    if (_server.method() == HTTP_POST) {
+        if (!_server.hasArg("plain")) {
+            _server.send(400, "application/json", "{\"error\":\"Missing body\"}");
+            return;
+        }
+
+        JsonDocument doc;
+        if (deserializeJson(doc, _server.arg("plain"))) {
+            _server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+            return;
+        }
+
+        bool enabled = doc["enabled"] | false;
+        if (enabled && !Debug.isEnabled()) {
+            Debug.clear();  // start each debug session with a clean buffer
+        }
+        Debug.setEnabled(enabled);
+    }
+
+    JsonDocument resp;
+    resp["enabled"] = Debug.isEnabled();
+    String jsonResp;
+    serializeJson(resp, jsonResp);
+    _server.send(200, "application/json", jsonResp);
 }
 
 void WebPortal::handleOtaUpload() {
@@ -325,12 +543,15 @@ void WebPortal::handleOtaComplete() {
 }
 
 void WebPortal::handleNotFound() {
-    // If request was from a captive portal check, redirect to root
-    String host = _server.hostHeader();
-    if (host != WiFi.softAPIP().toString()) {
-        _server.sendHeader("Location", String("http://") + WiFi.softAPIP().toString() + "/", true);
-        _server.send(302, "text/plain", "");
-        return;
+    // Captive portal redirect only makes sense while we are the access point.
+    // In station mode we return a real 404 so API/JS typos stay debuggable.
+    if (_apActive) {
+        String apIP = WiFi.softAPIP().toString();
+        if (_server.hostHeader() != apIP) {
+            _server.sendHeader("Location", String("http://") + apIP + "/", true);
+            _server.send(302, "text/plain", "");
+            return;
+        }
     }
 
     _server.send(404, "text/plain", "Not Found");

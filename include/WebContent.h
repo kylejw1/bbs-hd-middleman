@@ -103,6 +103,7 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
 .t-dir { flex-shrink: 0; width: 96px; font-weight: 700; text-align: right; }
 .t-hex { color: #cbd5e1; letter-spacing: 0.5px; }
 .t-ascii { color: #526072; }
+.t-parsed { color: #a5b4fc; font-style: italic; white-space: normal; min-width: 180px; max-width: 320px; }
 .t-drx { color: #34d399; }
 .t-dtx { color: #22d3ee; }
 .t-crx { color: #fbbf24; }
@@ -120,6 +121,7 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
     <span class="badge badge-neutral" id="badge-ctrl">BBS-HD</span>
   </div>
   <div class="status-pill-group">
+    <span class="badge badge-neutral" id="status-wifi" title="Wi-Fi mode">Wi-Fi: --</span>
     <span class="badge badge-neutral" id="status-disp">Display: Offline</span>
     <span class="badge badge-neutral" id="status-ctrl">Motor: Offline</span>
     <button class="btn btn-secondary" style="padding:4px 10px; font-size:0.75rem;" onclick="openWifiModal()">Wi-Fi</button>
@@ -248,17 +250,17 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
         <h3 class="card-title" style="margin-bottom:14px;">Current & Limits</h3>
         <div class="form-group">
           <label>Max Current (Amps)</label>
-          <input type="number" class="form-control" id="cfg-maxCurrent" min="5" max="33" value="30">
+          <input type="number" class="form-control" id="cfg-maxCurrent" min="5" max="33">
           <small>Safe BBSHD limit: 30A (stock controller max is 33A with bbs-fw).</small>
         </div>
         <div class="form-group">
           <label>Current Ramp Rate (A/s)</label>
-          <input type="number" class="form-control" id="cfg-currentRamp" min="1" max="255" value="50">
+          <input type="number" class="form-control" id="cfg-currentRamp" min="1" max="255">
           <small>Amperes per second rate of change. Lower = smoother acceleration.</small>
         </div>
         <div class="form-group">
           <label>Max Speed Limit (km/h)</label>
-          <input type="number" class="form-control" id="cfg-maxSpeed" min="0" max="180" value="50">
+          <input type="number" class="form-control" id="cfg-maxSpeed" min="0" max="180">
         </div>
       </div>
 
@@ -266,27 +268,28 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
         <h3 class="card-title" style="margin-bottom:14px;">Battery Voltage & Wheel</h3>
         <div class="form-group">
           <label>Max Battery Voltage (V)</label>
-          <input type="number" step="0.1" class="form-control" id="cfg-maxBatteryVolts" min="1" max="100" value="58.8">
+          <input type="number" step="0.1" class="form-control" id="cfg-maxBatteryVolts" min="1" max="100">
           <small>54.6V for 48V pack (13S), 58.8V for 52V pack (14S).</small>
         </div>
         <div class="form-group">
           <label>Low Voltage Cutoff LVC (V)</label>
-          <input type="number" class="form-control" id="cfg-lowCutoffVolts" min="1" max="100" value="41">
+          <input type="number" class="form-control" id="cfg-lowCutoffVolts" min="1" max="100">
           <small>39V-41V for 52V pack, 36V-38V for 48V pack.</small>
         </div>
         <div class="form-row">
           <div class="form-group">
             <label>Wheel Size (inch)</label>
-            <input type="number" step="0.1" class="form-control" id="cfg-wheelSizeInch" min="10" max="36" value="27.5">
+            <input type="number" step="0.1" class="form-control" id="cfg-wheelSizeInch" min="10" max="36">
           </div>
           <div class="form-group">
             <label>Speed Sensor Signals</label>
-            <input type="number" class="form-control" id="cfg-speedSensorSignals" min="1" max="10" value="1">
+            <input type="number" class="form-control" id="cfg-speedSensorSignals" min="1" max="10">
           </div>
         </div>
         <div class="form-group">
           <label>Display Units</label>
           <select class="form-control" id="cfg-freedomUnits">
+            <option value="" selected></option>
             <option value="0">Metric (km/h)</option>
             <option value="1">Imperial (mph)</option>
           </select>
@@ -302,22 +305,22 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
         <h3 class="card-title" style="margin-bottom:14px;">Pedal Assist (PAS) Tuning</h3>
         <div class="form-group">
           <label>PAS Start Delay (magnet pulses)</label>
-          <input type="number" class="form-control" id="cfg-pasStartDelay" min="0" max="24" value="3">
+          <input type="number" class="form-control" id="cfg-pasStartDelay" min="0" max="24">
           <small>Pulses needed before assist engages. 2-3 provides responsive startup.</small>
         </div>
         <div class="form-group">
           <label>PAS Stop Delay (ms)</label>
-          <input type="number" step="10" class="form-control" id="cfg-pasStopDelayMs" min="50" max="1000" value="200">
+          <input type="number" step="10" class="form-control" id="cfg-pasStopDelayMs" min="50" max="1000">
           <small>Delay before motor stops after pedaling stops. 150-250ms is optimal.</small>
         </div>
         <div class="form-group">
           <label>PAS Keep Current (%)</label>
-          <input type="number" class="form-control" id="cfg-pasKeepCurrentPercent" min="10" max="100" value="80">
+          <input type="number" class="form-control" id="cfg-pasKeepCurrentPercent" min="10" max="100">
           <small>Current maintained during high cadence pedaling.</small>
         </div>
         <div class="form-group">
           <label>PAS Keep Current Cadence (RPM)</label>
-          <input type="number" class="form-control" id="cfg-pasKeepCurrentCadenceRpm" min="0" max="255" value="255">
+          <input type="number" class="form-control" id="cfg-pasKeepCurrentCadenceRpm" min="0" max="255">
         </div>
       </div>
 
@@ -326,20 +329,21 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
         <div class="form-row">
           <div class="form-group">
             <label>Start Voltage (mV)</label>
-            <input type="number" class="form-control" id="cfg-throttleStartMv" min="200" max="2500" value="1100">
+            <input type="number" class="form-control" id="cfg-throttleStartMv" min="200" max="2500">
           </div>
           <div class="form-group">
             <label>End Voltage (mV)</label>
-            <input type="number" class="form-control" id="cfg-throttleEndMv" min="2500" max="5000" value="3600">
+            <input type="number" class="form-control" id="cfg-throttleEndMv" min="2500" max="5000">
           </div>
         </div>
         <div class="form-group">
           <label>Throttle Initial Power Kick (%)</label>
-          <input type="number" class="form-control" id="cfg-throttleStartPercent" min="0" max="100" value="5">
+          <input type="number" class="form-control" id="cfg-throttleStartPercent" min="0" max="100">
         </div>
         <div class="form-group">
           <label>Global Speed Limit Mode</label>
           <select class="form-control" id="cfg-throttleGlobalSpdLimOpt">
+            <option value="" selected></option>
             <option value="0">Disabled (Follows PAS)</option>
             <option value="1">Enabled (Custom Limit)</option>
             <option value="2">Standard Levels</option>
@@ -347,7 +351,7 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
         </div>
         <div class="form-group">
           <label>Global Speed Limit (%)</label>
-          <input type="number" class="form-control" id="cfg-throttleGlobalSpdLimPercent" min="0" max="100" value="100">
+          <input type="number" class="form-control" id="cfg-throttleGlobalSpdLimPercent" min="0" max="100">
         </div>
       </div>
     </div>
@@ -372,6 +376,8 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
               <th>Cruise</th>
               <th>Cad. Over</th>
               <th>Spd. Over</th>
+              <th>PAS Var</th>
+              <th>PAS Torq</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -399,6 +405,8 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
               <th>Cruise</th>
               <th>Cad. Over</th>
               <th>Spd. Over</th>
+              <th>PAS Var</th>
+              <th>PAS Torq</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -413,28 +421,29 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
       <div class="card">
         <h3 class="card-title" style="margin-bottom:14px;">Sensors & Cutoffs</h3>
         <div class="form-group">
-          <label><input type="checkbox" id="cfg-useSpeedSensor" checked> External Wheel Speed Sensor</label>
+          <label><input type="checkbox" id="cfg-useSpeedSensor"> External Wheel Speed Sensor</label>
         </div>
         <div class="form-group">
-          <label><input type="checkbox" id="cfg-useShiftSensor" checked> Shift Sensor Active</label>
+          <label><input type="checkbox" id="cfg-useShiftSensor"> Shift Sensor Active</label>
         </div>
         <div class="form-row">
           <div class="form-group">
             <label>Shift Cut Duration (ms)</label>
-            <input type="number" class="form-control" id="cfg-shiftInterruptDurationMs" min="50" max="2000" value="450">
+            <input type="number" class="form-control" id="cfg-shiftInterruptDurationMs" min="50" max="2000">
           </div>
           <div class="form-group">
             <label>Shift Current Cut (%)</label>
-            <input type="number" class="form-control" id="cfg-shiftInterruptCurrentThreshold" min="0" max="100" value="15">
+            <input type="number" class="form-control" id="cfg-shiftInterruptCurrentThreshold" min="0" max="100">
           </div>
         </div>
         <div class="form-group">
           <label>Temperature Sensors</label>
           <select class="form-control" id="cfg-temperatureSensor">
+            <option value="" selected></option>
             <option value="0">Disabled</option>
             <option value="1">Controller Only</option>
             <option value="2">Motor Only</option>
-            <option value="3" selected>All (Controller & Motor)</option>
+            <option value="3">All (Controller & Motor)</option>
           </select>
         </div>
       </div>
@@ -442,8 +451,19 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
       <div class="card">
         <h3 class="card-title" style="margin-bottom:14px;">Auxiliary Features</h3>
         <div class="form-group">
+          <label>Assist Mode Selection</label>
+          <select class="form-control" id="cfg-assistModeSelect">
+            <option value="" selected></option>
+            <option value="0">Off (Fixed mode)</option>
+            <option value="1">Standard (Display button)</option>
+            <option value="2">Lights (Headlight switch)</option>
+          </select>
+          <small>How the rider switches between Standard and Sport mode profiles.</small>
+        </div>
+        <div class="form-group">
           <label>Lights Mode</label>
           <select class="form-control" id="cfg-lightsMode">
+            <option value="" selected></option>
             <option value="0">Default (Display controlled)</option>
             <option value="1">Disabled</option>
             <option value="2">Always On</option>
@@ -451,11 +471,12 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
           </select>
         </div>
         <div class="form-group">
-          <label><input type="checkbox" id="cfg-usePushWalk" checked> Push / Walk Assist Enabled</label>
+          <label><input type="checkbox" id="cfg-usePushWalk"> Push / Walk Assist Enabled</label>
         </div>
         <div class="form-group">
           <label>Walk Mode Display Data Field</label>
           <select class="form-control" id="cfg-walkModeDisplay">
+            <option value="" selected></option>
             <option value="0">Speed</option>
             <option value="1">Temperature (&deg;C)</option>
             <option value="2">Requested Power (W)</option>
@@ -464,7 +485,7 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
         </div>
         <div class="form-group">
           <label>Startup Assist Level (0 - 9)</label>
-          <input type="number" class="form-control" id="cfg-assistStartupLevel" min="0" max="9" value="1">
+          <input type="number" class="form-control" id="cfg-assistStartupLevel" min="0" max="9">
         </div>
       </div>
     </div>
@@ -478,7 +499,7 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
         <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:12px;">Calibrate the controller's internal ADC so low voltage cutoff and battery percentages are pinpoint accurate.</p>
         <div class="form-group">
           <label>Measured Battery Voltage (from digital multimeter)</label>
-          <input type="number" step="0.1" class="form-control" id="cal-volts" placeholder="e.g. 52.4" value="52.0">
+          <input type="number" step="0.1" class="form-control" id="cal-volts" placeholder="e.g. 52.4">
         </div>
         <button class="btn btn-primary" onclick="calibrateVoltage()">Calibrate Voltage ADC</button>
       </div>
@@ -513,9 +534,14 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
     <div class="card">
       <div class="card-header">
         <span class="card-title">Serial Port Debug Console</span>
-        <span id="debug-stats" style="font-size:0.75rem; color:var(--text-muted);">0 events</span>
+        <span id="debug-stats" style="font-size:0.75rem; color:var(--text-muted);">disabled</span>
       </div>
+      <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:12px;">
+        Tracing is off by default to keep the UART bridge and Wi-Fi link light.
+        Enable it only while actively diagnosing the bus.
+      </p>
       <div class="debug-toolbar">
+        <button class="debug-toggle" id="btn-debug-enable" onclick="toggleDebugEnabled()">Debug: OFF</button>
         <button class="debug-toggle on" id="btn-pause" onclick="toggleDebugPause()">Running</button>
         <button class="debug-toggle on" id="btn-autoscroll" onclick="toggleDebugAutoscroll()">Auto-scroll</button>
         <button class="btn btn-secondary" style="padding:4px 10px;font-size:0.75rem;" onclick="clearDebugConsole()">Clear</button>
@@ -586,6 +612,8 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
 
 <script>
 let activeConfig = null;
+let configLoaded = false;   // true only after a successful controller read or JSON import
+let formTorque = { std: [], sport: [] };  // torque amp has no UI box; preserve values read from the motor
 let currentPas = 1;
 let currentMode = 0; // 0 = standard, 1 = sport
 let currentLights = false;
@@ -614,6 +642,8 @@ function switchTab(tabId) {
   if (tabId === 'tab-firmware') {
     fetchFirmwareInfo();
   }
+
+  updateDebugPolling();
 }
 
 // Build Assist Level Tables
@@ -625,15 +655,17 @@ function buildLevelTables() {
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td><strong>${i}</strong></td>
-        <td><input type="number" min="0" max="100" id="${type}-curr-${i}" value="${i === 0 ? 0 : 10 + i * 10}"></td>
-        <td><input type="number" min="0" max="100" id="${type}-throt-${i}" value="100"></td>
-        <td><input type="number" min="0" max="100" id="${type}-cad-${i}" value="100"></td>
-        <td><input type="number" min="0" max="100" id="${type}-spd-${i}" value="${i === 0 ? 100 : 40 + i * 6}"></td>
-        <td><input type="checkbox" id="${type}-pas-${i}" ${i > 0 ? 'checked' : ''}></td>
-        <td><input type="checkbox" id="${type}-th-${i}" checked></td>
+        <td><input type="number" min="0" max="100" id="${type}-curr-${i}"></td>
+        <td><input type="number" min="0" max="100" id="${type}-throt-${i}"></td>
+        <td><input type="number" min="0" max="100" id="${type}-cad-${i}"></td>
+        <td><input type="number" min="0" max="100" id="${type}-spd-${i}"></td>
+        <td><input type="checkbox" id="${type}-pas-${i}"></td>
+        <td><input type="checkbox" id="${type}-th-${i}"></td>
         <td><input type="checkbox" id="${type}-cr-${i}"></td>
-        <td><input type="checkbox" id="${type}-oc-${i}" ${type === 'sport' ? 'checked' : ''}></td>
+        <td><input type="checkbox" id="${type}-oc-${i}"></td>
         <td><input type="checkbox" id="${type}-os-${i}"></td>
+        <td><input type="checkbox" id="${type}-pv-${i}"></td>
+        <td><input type="checkbox" id="${type}-pt-${i}"></td>
       `;
       tbody.appendChild(tr);
     }
@@ -643,6 +675,7 @@ buildLevelTables();
 
 // Live Telemetry Polling
 async function pollTelemetry() {
+  if (document.hidden) return;
   try {
     const res = await fetch('/api/telemetry');
     if (!res.ok) return;
@@ -672,8 +705,21 @@ async function pollTelemetry() {
     ctrlPill.className = 'badge ' + (d.controllerConnected ? 'badge-active' : 'badge-neutral');
 
     if (d.statusCode !== 0) {
-      document.getElementById('val-status').innerText = 'Err 0x' + d.statusCode.toString(16).toUpperCase();
-      document.getElementById('val-status').className = 'badge badge-error';
+      const statusNames = {
+        0x01: 'Init',
+        0x02: 'Error',
+        0x03: 'Throttle Fault',
+        0x04: 'Controller Fault',
+        0x08: 'Hall Sensor',
+        0x10: 'Overcurrent',
+        0x20: 'Overvoltage',
+        0x40: 'Overtemp',
+        0x80: 'Undervoltage'
+      };
+      const label = statusNames[d.statusCode] || ('Code 0x' + d.statusCode.toString(16).toUpperCase());
+      const cls = (d.statusCode === 0x01) ? 'badge-warning' : 'badge-error';
+      document.getElementById('val-status').innerText = label;
+      document.getElementById('val-status').className = 'badge ' + cls;
     } else {
       document.getElementById('val-status').innerText = 'OK (0x00)';
       document.getElementById('val-status').className = 'badge badge-active';
@@ -693,10 +739,13 @@ async function pollTelemetry() {
     document.getElementById('btn-lights-toggle').innerText = 'Headlight: ' + (currentLights ? 'ON' : 'OFF');
   } catch (e) { }
 }
-setInterval(pollTelemetry, 600);
+// Backed off from 600 ms: the UART only produces new values far slower than
+// that, and this halves the radio airtime the dashboard consumes.
+setInterval(pollTelemetry, 1500);
 
 // Live Event Log Polling
 async function pollEvents() {
+  if (document.hidden) return;
   try {
     const res = await fetch('/api/events');
     if (!res.ok) return;
@@ -712,7 +761,15 @@ async function pollEvents() {
     });
   } catch (e) {}
 }
-setInterval(pollEvents, 1200);
+setInterval(pollEvents, 3000);
+
+// Refresh immediately when the tab becomes visible again; skip work while hidden.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  pollTelemetry();
+  pollEvents();
+  if (debugEnabled) pollSerialTrace();
+});
 
 function clearEventDisplay() {
   document.getElementById('log-stream').innerHTML = '';
@@ -753,12 +810,17 @@ async function fetchConfigFromController() {
 
   try {
     const res = await fetch('/api/config');
-    if (!res.ok) throw new Error('Failed to read config');
-    activeConfig = await res.json();
+    if (!res.ok) throw new Error('Controller did not respond');
+    const cfg = await res.json();
+    if (cfg.fromController !== true) throw new Error('Config was not read from the controller');
+    activeConfig = cfg;
+    configLoaded = true;
     populateConfigForm(activeConfig);
     showToast('Configuration loaded successfully!');
   } catch (e) {
-    showToast('Error reading from controller!');
+    activeConfig = null;
+    configLoaded = false;
+    showToast('Could not read configuration from the controller.');
   } finally {
     document.getElementById('badge-mode').innerText = 'Transparent Bridge';
     document.getElementById('badge-mode').className = 'badge badge-active';
@@ -766,6 +828,7 @@ async function fetchConfigFromController() {
 }
 
 function populateConfigForm(cfg) {
+  formTorque = { std: new Array(10).fill(null), sport: new Array(10).fill(null) };
   document.getElementById('cfg-maxCurrent').value = cfg.maxCurrent;
   document.getElementById('cfg-currentRamp').value = cfg.currentRamp;
   document.getElementById('cfg-maxBatteryVolts').value = cfg.maxBatteryVolts;
@@ -795,6 +858,9 @@ function populateConfigForm(cfg) {
   document.getElementById('cfg-usePushWalk').checked = cfg.usePushWalk;
   document.getElementById('cfg-walkModeDisplay').value = cfg.walkModeDisplay;
   document.getElementById('cfg-assistStartupLevel').value = cfg.assistStartupLevel;
+  if (cfg.assistModeSelect !== undefined) {
+    document.getElementById('cfg-assistModeSelect').value = cfg.assistModeSelect;
+  }
 
   // Populate matrix tables
   if (cfg.standardLevels) {
@@ -809,6 +875,9 @@ function populateConfigForm(cfg) {
       document.getElementById(`std-cr-${i}`).checked = lvl.cruise;
       document.getElementById(`std-oc-${i}`).checked = lvl.overrideCadence;
       document.getElementById(`std-os-${i}`).checked = lvl.overrideSpeed;
+      if (document.getElementById(`std-pv-${i}`)) document.getElementById(`std-pv-${i}`).checked = lvl.pasVariable || false;
+      if (document.getElementById(`std-pt-${i}`)) document.getElementById(`std-pt-${i}`).checked = lvl.pasTorque || false;
+      formTorque.std[i] = (typeof lvl.torqueAmp === 'number') ? lvl.torqueAmp : null;
     });
   }
 
@@ -824,38 +893,62 @@ function populateConfigForm(cfg) {
       document.getElementById(`sport-cr-${i}`).checked = lvl.cruise;
       document.getElementById(`sport-oc-${i}`).checked = lvl.overrideCadence;
       document.getElementById(`sport-os-${i}`).checked = lvl.overrideSpeed;
+      if (document.getElementById(`sport-pv-${i}`)) document.getElementById(`sport-pv-${i}`).checked = lvl.pasVariable || false;
+      if (document.getElementById(`sport-pt-${i}`)) document.getElementById(`sport-pt-${i}`).checked = lvl.pasTorque || false;
+      formTorque.sport[i] = (typeof lvl.torqueAmp === 'number') ? lvl.torqueAmp : null;
     });
   }
 }
 
+// Read a numeric box as a number, or null when it is empty/invalid. Nothing in
+// the form is pre-filled, so an untouched box must never silently become 0.
+function formInt(id) {
+  const el = document.getElementById(id);
+  if (!el) return null;
+  const v = el.value.trim();
+  if (v === '') return null;
+  const n = parseInt(v, 10);
+  return isNaN(n) ? null : n;
+}
+
+function formFloat(id) {
+  const el = document.getElementById(id);
+  if (!el) return null;
+  const v = el.value.trim();
+  if (v === '') return null;
+  const n = parseFloat(v);
+  return isNaN(n) ? null : n;
+}
+
 function collectConfigFromForm() {
   const cfg = {
-    maxCurrent: parseInt(document.getElementById('cfg-maxCurrent').value),
-    currentRamp: parseInt(document.getElementById('cfg-currentRamp').value),
-    maxBatteryVolts: parseFloat(document.getElementById('cfg-maxBatteryVolts').value),
-    lowCutoffVolts: parseInt(document.getElementById('cfg-lowCutoffVolts').value),
-    maxSpeed: parseInt(document.getElementById('cfg-maxSpeed').value),
-    wheelSizeInch: parseFloat(document.getElementById('cfg-wheelSizeInch').value),
-    speedSensorSignals: parseInt(document.getElementById('cfg-speedSensorSignals').value),
-    freedomUnits: parseInt(document.getElementById('cfg-freedomUnits').value),
-    pasStartDelay: parseInt(document.getElementById('cfg-pasStartDelay').value),
-    pasStopDelayMs: parseInt(document.getElementById('cfg-pasStopDelayMs').value),
-    pasKeepCurrentPercent: parseInt(document.getElementById('cfg-pasKeepCurrentPercent').value),
-    pasKeepCurrentCadenceRpm: parseInt(document.getElementById('cfg-pasKeepCurrentCadenceRpm').value),
-    throttleStartMv: parseInt(document.getElementById('cfg-throttleStartMv').value),
-    throttleEndMv: parseInt(document.getElementById('cfg-throttleEndMv').value),
-    throttleStartPercent: parseInt(document.getElementById('cfg-throttleStartPercent').value),
-    throttleGlobalSpdLimOpt: parseInt(document.getElementById('cfg-throttleGlobalSpdLimOpt').value),
-    throttleGlobalSpdLimPercent: parseInt(document.getElementById('cfg-throttleGlobalSpdLimPercent').value),
+    maxCurrent: formInt('cfg-maxCurrent'),
+    currentRamp: formInt('cfg-currentRamp'),
+    maxBatteryVolts: formFloat('cfg-maxBatteryVolts'),
+    lowCutoffVolts: formInt('cfg-lowCutoffVolts'),
+    maxSpeed: formInt('cfg-maxSpeed'),
+    wheelSizeInch: formFloat('cfg-wheelSizeInch'),
+    speedSensorSignals: formInt('cfg-speedSensorSignals'),
+    freedomUnits: formInt('cfg-freedomUnits'),
+    pasStartDelay: formInt('cfg-pasStartDelay'),
+    pasStopDelayMs: formInt('cfg-pasStopDelayMs'),
+    pasKeepCurrentPercent: formInt('cfg-pasKeepCurrentPercent'),
+    pasKeepCurrentCadenceRpm: formInt('cfg-pasKeepCurrentCadenceRpm'),
+    throttleStartMv: formInt('cfg-throttleStartMv'),
+    throttleEndMv: formInt('cfg-throttleEndMv'),
+    throttleStartPercent: formInt('cfg-throttleStartPercent'),
+    throttleGlobalSpdLimOpt: formInt('cfg-throttleGlobalSpdLimOpt'),
+    throttleGlobalSpdLimPercent: formInt('cfg-throttleGlobalSpdLimPercent'),
     useSpeedSensor: document.getElementById('cfg-useSpeedSensor').checked,
     useShiftSensor: document.getElementById('cfg-useShiftSensor').checked,
-    shiftInterruptDurationMs: parseInt(document.getElementById('cfg-shiftInterruptDurationMs').value),
-    shiftInterruptCurrentThreshold: parseInt(document.getElementById('cfg-shiftInterruptCurrentThreshold').value),
-    temperatureSensor: parseInt(document.getElementById('cfg-temperatureSensor').value),
-    lightsMode: parseInt(document.getElementById('cfg-lightsMode').value),
+    shiftInterruptDurationMs: formInt('cfg-shiftInterruptDurationMs'),
+    shiftInterruptCurrentThreshold: formInt('cfg-shiftInterruptCurrentThreshold'),
+    temperatureSensor: formInt('cfg-temperatureSensor'),
+    lightsMode: formInt('cfg-lightsMode'),
     usePushWalk: document.getElementById('cfg-usePushWalk').checked,
-    walkModeDisplay: parseInt(document.getElementById('cfg-walkModeDisplay').value),
-    assistStartupLevel: parseInt(document.getElementById('cfg-assistStartupLevel').value),
+    walkModeDisplay: formInt('cfg-walkModeDisplay'),
+    assistStartupLevel: formInt('cfg-assistStartupLevel'),
+    assistModeSelect: formInt('cfg-assistModeSelect'),
     standardLevels: [],
     sportLevels: []
   };
@@ -864,16 +957,20 @@ function collectConfigFromForm() {
     const targetArr = (type === 'std') ? cfg.standardLevels : cfg.sportLevels;
     for (let i = 0; i < 10; ++i) {
       targetArr.push({
-        current: parseInt(document.getElementById(`${type}-curr-${i}`).value),
-        maxThrottle: parseInt(document.getElementById(`${type}-throt-${i}`).value),
-        cadence: parseInt(document.getElementById(`${type}-cad-${i}`).value),
-        speed: parseInt(document.getElementById(`${type}-spd-${i}`).value),
+        current: formInt(`${type}-curr-${i}`),
+        maxThrottle: formInt(`${type}-throt-${i}`),
+        cadence: formInt(`${type}-cad-${i}`),
+        speed: formInt(`${type}-spd-${i}`),
         pas: document.getElementById(`${type}-pas-${i}`).checked,
         throttle: document.getElementById(`${type}-th-${i}`).checked,
         cruise: document.getElementById(`${type}-cr-${i}`).checked,
         overrideCadence: document.getElementById(`${type}-oc-${i}`).checked,
         overrideSpeed: document.getElementById(`${type}-os-${i}`).checked,
-        torqueAmp: 1.0
+        pasVariable: document.getElementById(`${type}-pv-${i}`) ? document.getElementById(`${type}-pv-${i}`).checked : false,
+        pasTorque: document.getElementById(`${type}-pt-${i}`) ? document.getElementById(`${type}-pt-${i}`).checked : false,
+        // Torque amplification has no input box; carry over the value the
+        // controller reported instead of overwriting it with a made-up default.
+        torqueAmp: formTorque[type][i]
       });
     }
   });
@@ -881,8 +978,46 @@ function collectConfigFromForm() {
   return cfg;
 }
 
+// Returns the name of the first required field that was never read/entered,
+// or null when the form holds a complete configuration.
+function findMissingConfigField(cfg) {
+  const scalars = [
+    'maxCurrent', 'currentRamp', 'maxBatteryVolts', 'lowCutoffVolts', 'maxSpeed',
+    'wheelSizeInch', 'speedSensorSignals', 'freedomUnits', 'pasStartDelay',
+    'pasStopDelayMs', 'pasKeepCurrentPercent', 'pasKeepCurrentCadenceRpm',
+    'throttleStartMv', 'throttleEndMv', 'throttleStartPercent',
+    'throttleGlobalSpdLimOpt', 'throttleGlobalSpdLimPercent',
+    'shiftInterruptDurationMs', 'shiftInterruptCurrentThreshold',
+    'temperatureSensor', 'lightsMode', 'walkModeDisplay', 'assistStartupLevel',
+    'assistModeSelect'
+  ];
+  for (const key of scalars) {
+    if (cfg[key] === null || cfg[key] === undefined || Number.isNaN(cfg[key])) return key;
+  }
+  for (const type of ['standardLevels', 'sportLevels']) {
+    for (let i = 0; i < cfg[type].length; ++i) {
+      for (const key of ['current', 'maxThrottle', 'cadence', 'speed', 'torqueAmp']) {
+        const v = cfg[type][i][key];
+        if (v === null || v === undefined || Number.isNaN(v)) return `${type} level ${i} ${key}`;
+      }
+    }
+  }
+  return null;
+}
+
 async function writeConfigToController() {
+  if (!configLoaded) {
+    showToast('Read the configuration from the controller first.');
+    return;
+  }
+
   const cfg = collectConfigFromForm();
+  const missing = findMissingConfigField(cfg);
+  if (missing) {
+    showToast('Cannot save: "' + missing + '" is empty. Read from the controller first.');
+    return;
+  }
+
   showToast('Flashing configuration to EEPROM...');
   document.getElementById('badge-mode').innerText = 'Writing Config...';
   document.getElementById('badge-mode').className = 'badge badge-warning';
@@ -965,6 +1100,7 @@ function importJsonFile(evt) {
     try {
       const cfg = JSON.parse(e.target.result);
       populateConfigForm(cfg);
+      configLoaded = true;
       showToast('Loaded profile from file.');
     } catch(err) {
       alert('Invalid JSON configuration file');
@@ -974,6 +1110,11 @@ function importJsonFile(evt) {
 }
 
 // ---------- Debug Console ----------
+// Tracing is OFF by default. The firmware ring buffer is only enabled on
+// demand, and the UI only polls while it is enabled AND this tab is visible,
+// so a weak Wi-Fi link is never saturated by background trace traffic.
+let debugEnabled = false;
+let debugTimer = null;
 let lastTraceSeq = 0;
 let tracePaused = false;
 let traceAutoscroll = true;
@@ -1052,72 +1193,199 @@ function clearDebugConsole() {
   lastTraceSeq = 0;
 }
 
-// Group consecutive byte events of the same direction into single lines
+function debugTabVisible() {
+  const active = document.querySelector('.tab-content.active');
+  return active !== null && active.id === 'tab-debug';
+}
+
+function setDebugUiState() {
+  const btn = document.getElementById('btn-debug-enable');
+  if (btn) {
+    btn.textContent = debugEnabled ? 'Debug: ON' : 'Debug: OFF';
+    btn.classList.toggle('on', debugEnabled);
+  }
+  const stats = document.getElementById('debug-stats');
+  if (stats && !debugEnabled) stats.innerText = 'disabled';
+}
+
+// Only poll while tracing is enabled AND the console tab is on screen.
+function updateDebugPolling() {
+  const shouldPoll = debugEnabled && debugTabVisible();
+  if (shouldPoll && debugTimer === null) {
+    pollSerialTrace();
+    debugTimer = setInterval(pollSerialTrace, 500);
+  } else if (!shouldPoll && debugTimer !== null) {
+    clearInterval(debugTimer);
+    debugTimer = null;
+  }
+  setDebugUiState();
+}
+
+async function toggleDebugEnabled() {
+  const next = !debugEnabled;
+  try {
+    const res = await fetch('/api/debug', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ enabled: next })
+    });
+    if (!res.ok) throw new Error('debug toggle failed');
+    debugEnabled = next;
+  } catch (e) {
+    showToast('Could not change debug tracing state.');
+    return;
+  }
+
+  if (debugEnabled) {
+    lastTraceSeq = 0;
+    document.getElementById('terminal').innerHTML = '';
+  }
+  updateDebugPolling();
+}
+
+// Known Bafang opcode & command descriptions for the parsed debug column
+const BAFANG_PAS_CODES = {0x00:0, 0x01:1, 0x0b:2, 0x0c:3, 0x0d:4, 0x02:5, 0x15:6, 0x16:7, 0x17:8, 0x03:9, 0x06:6};
+const BAFANG_PAS_NAMES = ['0','1','2','3','4','5','6 (Walk)','6','7','8','9'];
+
+function parsePacket(bytes, dir) {
+  if (!bytes || bytes.length < 2) return null;
+  // Display -> Controller reads (0x11 prefix)
+  if (bytes[0] === 0x11) {
+    switch (bytes[1]) {
+      case 0x08: return '⤓ Status';
+      case 0x0a: return '⤓ Current';
+      case 0x11: return '⤓ Battery %';
+      case 0x20: return '⤓ Speed';
+      case 0x21: return '⤓ Unknown (0x21)';
+      case 0x22: return '⤓ Range';
+      case 0x24: return '⤓ Voltage';
+      case 0x25: return '⤓ Unknown (0x25)';
+      case 0x31: return '⤓ Moving?';
+    }
+  }
+  // Display -> Controller writes (0x16 prefix)
+  if (bytes[0] === 0x16) {
+    switch (bytes[1]) {
+      case 0x0b: {
+        let lvl = (bytes.length >= 3) ? (BAFANG_PAS_CODES[bytes[2]] ?? bytes[2]) : '?';
+        return '✎ PAS → Level ' + lvl;
+      }
+      case 0x0c: {
+        let mode = (bytes.length >= 3) ? (bytes[2] === 0x04 ? 'Sport' : 'Standard') : '?';
+        return '✎ Mode → ' + mode;
+      }
+      case 0x1a: {
+        let st = (bytes.length >= 3) ? (bytes[2] === 0xf1 ? 'ON' : 'OFF') : '?';
+        return '✎ Lights → ' + st;
+      }
+      case 0x1f: return '✎ Speed Limit';
+    }
+  }
+  // Config tool reads (0x01 prefix)
+  if (bytes[0] === 0x01) {
+    switch (bytes[1]) {
+      case 0x01: {
+        if (bytes.length >= 8 && dir === 'crx') {
+          return 'FW: v' + bytes[2] + '.' + bytes[3] + '.' + bytes[4] + ' cfg=v' + bytes[5] + ' type=' + bytes[6];
+        }
+        return 'FW Version query';
+      }
+      case 0x03: return 'Read Config';
+      case 0x04: return 'Read Status';
+    }
+  }
+  // Config tool writes (0x02 prefix)
+  if (bytes[0] === 0x02) {
+    switch (bytes[1]) {
+      case 0xf0: return 'EventLog ' + ((bytes.length >= 3 && bytes[2]) ? 'ON' : 'OFF');
+      case 0xf1: return 'Write Config';
+      case 0xf2: return 'Reset Config';
+      case 0xf3: {
+        if (bytes.length >= 5) {
+          let v = ((bytes[2] << 8) | bytes[3]) / 100.0;
+          return 'Calibrate V → ' + v.toFixed(1) + 'V';
+        }
+        return 'Calibrate Voltage';
+      }
+    }
+  }
+  // Event log frames
+  if (bytes[0] === 0xee && bytes.length >= 3) {
+    return 'Event #' + bytes[1];
+  }
+  if (bytes[0] === 0xed && bytes.length >= 5) {
+    let d = (bytes[2] << 8) | bytes[3];
+    return 'Event #' + bytes[1] + ' data=' + d;
+  }
+  // Controller response parsing (crx = controller→middleman)
+  if (dir === 'crx') {
+    // These are sniffed response bodies; context depends on the last display query
+    if (bytes.length === 1) return 'Status: 0x' + bytes[0].toString(16).toUpperCase();
+    if (bytes.length === 2) return 'Amps×2=' + bytes[0] + ' (' + (bytes[0]/2).toFixed(1) + 'A) / Bat%=' + bytes[0];
+    if (bytes.length === 3) {
+      let rpm = (bytes[0] << 8) | bytes[1];
+      return 'RPM=' + rpm + ' / V×10=' + ((bytes[0] << 8) | bytes[1]);
+    }
+    if (bytes.length === 4 && bytes[0] === 0x02) {
+      if (bytes[1] === 0xf1) return 'Config write: ' + (bytes[2] ? 'OK' : 'FAIL');
+    }
+  }
+  return null;
+}
+
+// Group consecutive byte events by source direction so multi-byte packets
+// (e.g. 11 08) stay together for the parsePacket column.  Forwarded copies
+// (ctx=MCU→CTRL, dtx=MCU→DISP) are always single-byte.
 function renderTraceEvents(bytes, texts) {
+  function flushGroup(group) {
+    if (!group) return;
+    const hex = bytesToHex(group.bytes);
+    const asc = bytesToAscii(group.bytes);
+    const tag = group.dir;
+    const parsed = parsePacket(group.bytes, tag) || '';
+    const ln = '<span class="t-time">' + formatMs(group.startTs) + '</span>'
+      + '<span class="t-dir ' + dirCls[tag] + '">' + dirLabels[tag] + '</span>'
+      + '<span class="t-hex">' + hex + '</span>'
+      + '  <span class="t-ascii">|' + asc + '|</span>'
+      + (parsed ? '  <span class="t-parsed">' + escapeHtml(parsed) + '</span>' : '');
+    appendTerminalLine(ln, 't-' + tag);
+  }
+
   // Merge and sort by sequence number
   const all = [];
   bytes.forEach(b => { if (traceFilters[b.d]) all.push({...b, kind: 'b'}); });
   texts.forEach(t => { if (traceFilters.sys) all.push({...t, kind: 't'}); });
   all.sort((a, b) => a.s - b.s);
 
-  // Group consecutive byte events by direction
+  // Group source bytes (drx, crx) when consecutive in same direction.
+  // Forwarded copies (dtx, ctx) are always flushed as single-bytes so they
+  // don't interleave with the source groups.
   let group = null;
   for (let i = 0; i < all.length; ++i) {
     const evt = all[i];
     if (evt.kind === 't') {
-      // Flush any pending byte group
-      if (group) {
-        const hex = bytesToHex(group.bytes);
-        const asc = bytesToAscii(group.bytes);
-        const tag = group.dir;
-        const ln = '<span class="t-time">' + formatMs(group.startTs) + '</span>'
-          + '<span class="t-dir ' + dirCls[tag] + '">' + dirLabels[tag] + '</span>'
-          + '<span class="t-hex">' + hex + '</span>'
-          + '  <span class="t-ascii">|' + asc + '|</span>';
-        appendTerminalLine(ln, 't-' + tag);
-        group = null;
-      }
-      // Render text event
+      flushGroup(group); group = null;
       const ln = '<span class="t-time">' + formatMs(evt.t) + '</span>'
         + '<span class="t-dir t-sys">SYSTEM</span>'
         + '<span style="color:#94a3b8;">' + escapeHtml(evt.msg) + '</span>';
       appendTerminalLine(ln, 't-sys');
     } else {
-      // Byte event
-      if (!group || group.dir !== evt.d) {
-        // Flush old group
-        if (group) {
-          const hex = bytesToHex(group.bytes);
-          const asc = bytesToAscii(group.bytes);
-          const tag = group.dir;
-          const ln = '<span class="t-time">' + formatMs(group.startTs) + '</span>'
-            + '<span class="t-dir ' + dirCls[tag] + '">' + dirLabels[tag] + '</span>'
-            + '<span class="t-hex">' + hex + '</span>'
-            + '  <span class="t-ascii">|' + asc + '|</span>';
-          appendTerminalLine(ln, 't-' + tag);
-        }
-        // Start new group
-        group = { dir: evt.d, startTs: evt.t, bytes: [evt.b] };
-      } else {
+      const isSource = (evt.d === 'drx' || evt.d === 'crx');
+      if (isSource && group && group.dir === evt.d) {
+        // Extend current source group
         group.bytes.push(evt.b);
+      } else {
+        // Flush old group, start new
+        flushGroup(group);
+        group = { dir: evt.d, startTs: evt.t, bytes: [evt.b] };
       }
     }
   }
-  // Flush final group
-  if (group) {
-    const hex = bytesToHex(group.bytes);
-    const asc = bytesToAscii(group.bytes);
-    const tag = group.dir;
-    const ln = '<span class="t-time">' + formatMs(group.startTs) + '</span>'
-      + '<span class="t-dir ' + dirCls[tag] + '">' + dirLabels[tag] + '</span>'
-      + '<span class="t-hex">' + hex + '</span>'
-      + '  <span class="t-ascii">|' + asc + '|</span>';
-    appendTerminalLine(ln, 't-' + tag);
-  }
+  flushGroup(group);
 }
 
 async function pollSerialTrace() {
-  if (tracePaused) return;
+  if (!debugEnabled || tracePaused || document.hidden) return;
   try {
     const url = '/api/serial-trace?after=' + lastTraceSeq;
     const res = await fetch(url);
@@ -1141,7 +1409,7 @@ async function pollSerialTrace() {
     statsEl.innerText = term.children.length + ' lines' + (data.dropped > 0 ? ' (' + data.dropped + ' dropped)' : '');
   } catch (e) {}
 }
-setInterval(pollSerialTrace, 300);
+// No global interval: polling is started/stopped by updateDebugPolling().
 
 // ---------- Firmware Update ----------
 async function fetchFirmwareInfo() {
@@ -1150,8 +1418,17 @@ async function fetchFirmwareInfo() {
     const info = await res.json();
     document.getElementById('fw-version').textContent = info.fwVersion || 'unknown';
     document.getElementById('fw-build').textContent = info.fwBuild || 'unknown';
+
+    const pill = document.getElementById('status-wifi');
+    if (pill) {
+      pill.textContent = 'Wi-Fi: ' + (info.wifiMode || '?');
+      pill.title = 'STA IP: ' + (info.staIP || '-')
+        + '  |  AP IP: ' + (info.apIP || 'Off')
+        + '  |  http://' + (info.mdnsHost || 'bbshd.local') + '/';
+    }
   } catch(e) {}
 }
+fetchFirmwareInfo();
 
 function startOtaUpload() {
   const fileInput = document.getElementById('fw-file');
@@ -1222,7 +1499,10 @@ function openWifiModal() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ssid: ssid, pass: pass || "" })
-  }).then(() => showToast('Wi-Fi credentials saved. Restarting Wi-Fi...'));
+  }).then(() => {
+    showToast('Joining ' + ssid + '... if it fails the fallback AP returns. Reach the UI at http://bbshd.local/');
+    setTimeout(fetchFirmwareInfo, 15000);  // refresh the Wi-Fi pill once the join settles
+  });
 }
 </script>
 </body>

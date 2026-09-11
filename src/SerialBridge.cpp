@@ -438,18 +438,80 @@ void SerialBridge::flushQueuedDisplayWrites() {
 // CONTROLLER CONFIG TRANSACTIONS
 // -----------------------------------------------------------------------------
 
+// bbs-fw emits event-log frames asynchronously and they can land in the middle
+// of a config transaction. They must be swallowed (and parsed into telemetry)
+// rather than counted as the transaction response, otherwise a write gets
+// "checksum mismatch" and fails even though the controller accepted it.
+// Frame shapes: 0xEE <id> <chk> (3 bytes) or 0xED <id> <hi> <lo> <chk> (5 bytes).
+// `firstByte` has already been consumed by the caller.
+bool SerialBridge::consumeControllerEventFrame(uint8_t firstByte, uint32_t deadlineMs) {
+    const size_t evtSize = (firstByte == EVENT_LOG_ENTRY) ? 3 : 5;
+    uint8_t frame[5];
+    frame[0] = firstByte;
+    size_t n = 1;
+
+    while (n < evtSize && (int32_t)(deadlineMs - millis()) > 0) {
+        // Keep servicing Display so it never times out during long transfers!
+        processDisplayRxIntercept();
+
+        while (_controllerSerial.available() && n < evtSize) {
+            frame[n] = (uint8_t)_controllerSerial.read();
+            Telemetry.recordControllerRx(1);
+            Debug.traceByte(TraceDir::ControllerRx, frame[n]);
+            ++n;
+        }
+
+        if (n < evtSize) {
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
+    }
+
+    if (n < evtSize) {
+        Debug.tracef("Event frame truncated (%d of %d bytes)", (int)n, (int)evtSize);
+        return false;
+    }
+
+    if (!verifyChecksum(frame, evtSize)) {
+        Debug.trace("Event frame checksum mismatch, discarded");
+        return true;  // garbled frame consumed; keep waiting for the response
+    }
+
+    int16_t evtData = 0;
+    bool hasData = false;
+    if (firstByte == EVENT_LOG_DATA_ENTRY) {
+        evtData = (int16_t)((frame[2] << 8) | frame[3]);
+        hasData = true;
+    }
+
+    Telemetry.addEvent(frame[1], evtData, hasData);
+    Telemetry.recordIntercept();
+    Debug.tracef("Event log intercepted during config: id=%d data=%d", frame[1], evtData);
+    return true;
+}
+
 bool SerialBridge::receiveController(uint8_t* buf, size_t len, uint32_t timeoutMs) {
     size_t received = 0;
-    uint32_t startMs = millis();
+    uint32_t deadlineMs = millis() + timeoutMs;
 
-    while (received < len && (millis() - startMs) < timeoutMs) {
+    while (received < len && (int32_t)(deadlineMs - millis()) > 0) {
         // Keep servicing Display so it never times out during long transfers!
         processDisplayRxIntercept();
 
         while (_controllerSerial.available()) {
-            buf[received++] = (uint8_t)_controllerSerial.read();
+            uint8_t byteVal = (uint8_t)_controllerSerial.read();
             Telemetry.recordControllerRx(1);
-            Debug.traceByte(TraceDir::ControllerRx, buf[received - 1]);
+            Debug.traceByte(TraceDir::ControllerRx, byteVal);
+
+            // At a frame boundary an async event-log frame may be interleaved
+            // with the response we are waiting for.
+            if (received == 0 && (byteVal == EVENT_LOG_ENTRY || byteVal == EVENT_LOG_DATA_ENTRY)) {
+                if (!consumeControllerEventFrame(byteVal, deadlineMs)) {
+                    return false;
+                }
+                continue;
+            }
+
+            buf[received++] = byteVal;
             if (received >= len) break;
         }
 

@@ -30,14 +30,33 @@
 // Debug USB Serial baud rate
 #define DEBUG_SERIAL_BAUD       115200
 
+// Serial trace ring buffer / web Debug Console.
+// Disabled by default: capturing every UART byte costs CPU/RAM and the web UI
+// polling /api/serial-trace floods a weak Wi-Fi link. Enable it from the
+// Debug Console tab only while actively diagnosing the bus.
+#define DEBUG_TRACE_ENABLED_DEFAULT  0
+
 // =============================================================================
 // WI-FI CONFIGURATION
 // =============================================================================
 // Default SoftAP credentials
 #define DEFAULT_AP_SSID         "BBS-FW-Middleman"
 #define DEFAULT_AP_PASS         "bafang1234"   // Set to "" for open network
-#define DEFAULT_AP_CHANNEL      1
+#define DEFAULT_AP_CHANNEL      6              // fallback only; the AP scans for a quiet channel
 #define DEFAULT_AP_MAX_CONN     4
+
+// mDNS hostname: the dashboard is reachable at http://<MDNS_HOSTNAME>.local/
+// in both station and access-point modes, so you never have to remember an IP.
+#define MDNS_HOSTNAME           "bbshd"
+
+// Station-first Wi-Fi management:
+//  * Try the configured router first (STA-only, best throughput).
+//  * Fall back to our own SoftAP if the join does not complete in time.
+//  * Drop the SoftAP once the station link is up (avoids single-radio AP+STA contention).
+//  * If the station link later drops, wait out a grace period before falling back.
+#define STA_CONNECT_TIMEOUT_MS  12000
+#define STA_LOST_GRACE_MS       45000
+#define AP_SCAN_TIMEOUT_MS      4000
 
 // Captive Portal DNS port
 #define DNS_PORT                53

@@ -4,6 +4,7 @@ DebugLog Debug;
 
 DebugLog::DebugLog()
     : _mutex(nullptr)
+    , _enabled(DEBUG_TRACE_ENABLED_DEFAULT != 0)
     , _byteHead(0)
     , _byteCount(0)
     , _textHead(0)
@@ -19,12 +20,31 @@ void DebugLog::begin() {
     }
 }
 
+void DebugLog::setEnabled(bool enabled) {
+    _enabled = enabled;
+}
+
+void DebugLog::clear() {
+    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(20)) != pdTRUE) {
+        return;
+    }
+    _byteHead = 0;
+    _byteCount = 0;
+    _textHead = 0;
+    _textCount = 0;
+    _seq = 0;
+    _dropped = 0;
+    xSemaphoreGive(_mutex);
+}
+
 void DebugLog::traceByte(TraceDir dir, uint8_t byte) {
+    if (!_enabled) return;
     uint32_t seq = _seq++;
     _writeByteEntry(millis(), seq, (uint8_t)dir, byte);
 }
 
 void DebugLog::traceBytes(TraceDir dir, const uint8_t* data, size_t len) {
+    if (!_enabled) return;
     for (size_t i = 0; i < len; ++i) {
         uint32_t seq = _seq++;
         _writeByteEntry(millis(), seq, (uint8_t)dir, data[i]);
@@ -32,6 +52,7 @@ void DebugLog::traceBytes(TraceDir dir, const uint8_t* data, size_t len) {
 }
 
 void DebugLog::tracef(const char* fmt, ...) {
+    if (!_enabled) return;
     char buf[TRACE_TEXT_MAX];
     va_list args;
     va_start(args, fmt);
@@ -44,6 +65,7 @@ void DebugLog::tracef(const char* fmt, ...) {
 }
 
 void DebugLog::trace(const char* msg) {
+    if (!_enabled) return;
     uint32_t seq = _seq++;
     _writeTextEntry(millis(), seq, msg);
 }

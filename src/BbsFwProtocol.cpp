@@ -163,6 +163,8 @@ bool serializeConfigToJson(const BbsFwConfigV5& cfg, JsonDocument& doc) {
         lvl["cruise"] = (cfg.standard_levels[i].flags & ASSIST_FLAG_CRUISE) != 0;
         lvl["overrideCadence"] = (cfg.standard_levels[i].flags & ASSIST_FLAG_OVERRIDE_CADENCE) != 0;
         lvl["overrideSpeed"] = (cfg.standard_levels[i].flags & ASSIST_FLAG_OVERRIDE_SPEED) != 0;
+        lvl["pasVariable"] = (cfg.standard_levels[i].flags & ASSIST_FLAG_PAS_VARIABLE) != 0;
+        lvl["pasTorque"] = (cfg.standard_levels[i].flags & ASSIST_FLAG_PAS_TORQUE) != 0;
         lvl["current"] = cfg.standard_levels[i].target_current_percent;
         lvl["maxThrottle"] = cfg.standard_levels[i].max_throttle_current_percent;
         lvl["cadence"] = cfg.standard_levels[i].max_cadence_percent;
@@ -180,6 +182,8 @@ bool serializeConfigToJson(const BbsFwConfigV5& cfg, JsonDocument& doc) {
         lvl["cruise"] = (cfg.sport_levels[i].flags & ASSIST_FLAG_CRUISE) != 0;
         lvl["overrideCadence"] = (cfg.sport_levels[i].flags & ASSIST_FLAG_OVERRIDE_CADENCE) != 0;
         lvl["overrideSpeed"] = (cfg.sport_levels[i].flags & ASSIST_FLAG_OVERRIDE_SPEED) != 0;
+        lvl["pasVariable"] = (cfg.sport_levels[i].flags & ASSIST_FLAG_PAS_VARIABLE) != 0;
+        lvl["pasTorque"] = (cfg.sport_levels[i].flags & ASSIST_FLAG_PAS_TORQUE) != 0;
         lvl["current"] = cfg.sport_levels[i].target_current_percent;
         lvl["maxThrottle"] = cfg.sport_levels[i].max_throttle_current_percent;
         lvl["cadence"] = cfg.sport_levels[i].max_cadence_percent;
@@ -278,6 +282,8 @@ bool deserializeConfigFromJson(const JsonDocument& doc, BbsFwConfigV5& cfg) {
             if (lvl["cruise"].is<bool>() && lvl["cruise"]) flags |= ASSIST_FLAG_CRUISE;
             if (lvl["overrideCadence"].is<bool>() && lvl["overrideCadence"]) flags |= ASSIST_FLAG_OVERRIDE_CADENCE;
             if (lvl["overrideSpeed"].is<bool>() && lvl["overrideSpeed"]) flags |= ASSIST_FLAG_OVERRIDE_SPEED;
+            if (lvl["pasVariable"].is<bool>() && lvl["pasVariable"]) flags |= ASSIST_FLAG_PAS_VARIABLE;
+            if (lvl["pasTorque"].is<bool>() && lvl["pasTorque"]) flags |= ASSIST_FLAG_PAS_TORQUE;
             if (lvl["flags"].is<uint8_t>()) flags = lvl["flags"];
 
             cfg.standard_levels[i].flags = flags;
@@ -302,6 +308,8 @@ bool deserializeConfigFromJson(const JsonDocument& doc, BbsFwConfigV5& cfg) {
             if (lvl["cruise"].is<bool>() && lvl["cruise"]) flags |= ASSIST_FLAG_CRUISE;
             if (lvl["overrideCadence"].is<bool>() && lvl["overrideCadence"]) flags |= ASSIST_FLAG_OVERRIDE_CADENCE;
             if (lvl["overrideSpeed"].is<bool>() && lvl["overrideSpeed"]) flags |= ASSIST_FLAG_OVERRIDE_SPEED;
+            if (lvl["pasVariable"].is<bool>() && lvl["pasVariable"]) flags |= ASSIST_FLAG_PAS_VARIABLE;
+            if (lvl["pasTorque"].is<bool>() && lvl["pasTorque"]) flags |= ASSIST_FLAG_PAS_TORQUE;
             if (lvl["flags"].is<uint8_t>()) flags = lvl["flags"];
 
             cfg.sport_levels[i].flags = flags;

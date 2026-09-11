@@ -104,6 +104,19 @@ Defined in [`include/BbsFwProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/in
 * `sport_levels[10]`: $10 \times 6 = 60$ bytes.
 * Total size: $34 + 60 + 60 = 154$ bytes (`#pragma pack(push, 1)`).
 
+### Wi-Fi Management (`WebPortal`)
+The ESP32-S3 has a **single 2.4 GHz radio**, so AP+STA coexistence is slow. The portal is therefore **station-first**:
+* If station credentials are stored, it joins the router in `WIFI_STA` only. On success it stays STA and the SoftAP + DNS captive portal are torn down.
+* If the join does not complete within `STA_CONNECT_TIMEOUT_MS`, it runs an **async** channel scan (`WiFi.scanNetworks(true, true)`, never a blocking scan in `loop()`) and brings up a SoftAP on the least-congested of channels 1/6/11.
+* If the station link drops, it waits `STA_LOST_GRACE_MS` for auto-reconnect before falling back to the SoftAP. Once on the SoftAP it does not retry the station until the user submits credentials again.
+* `WiFi.setSleep(false)` is set in every mode for dashboard latency.
+* The DNS server (`_dnsServer`, wildcard to the AP IP) runs **only while `_apActive`**. Captive-portal redirects (including `handleNotFound`) are likewise AP-only; in STA mode unknown paths return a real 404 so API typos stay debuggable.
+* mDNS is advertised as `http://<MDNS_HOSTNAME>.local/` (default `bbshd.local`) in both modes via `MDNS.begin()`; the hostname and current mode are exposed by `/api/info`.
+* All lifecycle work happens non-blockingly in `WebPortal::process()` driven by the `WifiPhase` state machine (`StaConnecting` → `StaConnected` / `ApScanning` → `ApOnly`). Never add a blocking wait here — it would stall `Bridge.process()` and overrun the 1200-baud UART.
+
+### Web UI Polling Budget
+The dashboard polls `/api/telemetry` (1.5 s), `/api/events` (3 s), and — only while the Debug Console toggle is on and its tab is visible — `/api/serial-trace` (0.5 s). All polling functions bail out when `document.hidden`. `DebugLog` tracing is disabled by default (`DEBUG_TRACE_ENABLED_DEFAULT 0`) so an idle device generates no trace traffic.
+
 ---
 
 ## 4. Codebase Navigation

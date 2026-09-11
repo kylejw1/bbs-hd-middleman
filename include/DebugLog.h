@@ -53,6 +53,15 @@ public:
 
     void begin();
 
+    // Master enable switch. Tracing is DISABLED by default so the bridge does
+    // not spend CPU/RAM on the trace ring buffer (and the web UI does not poll
+    // /api/serial-trace) unless a user explicitly turns the debug console on.
+    void setEnabled(bool enabled);
+    bool isEnabled() const { return _enabled; }
+
+    // Discard all buffered trace entries and reset the sequence counter.
+    void clear();
+
     // Byte-level tracing — call these from SerialBridge on every UART read/write
     void traceByte(TraceDir dir, uint8_t byte);
     void traceBytes(TraceDir dir, const uint8_t* data, size_t len);
@@ -73,6 +82,7 @@ public:
 
 private:
     mutable SemaphoreHandle_t _mutex;
+    bool _enabled;          // false until explicitly enabled via the web UI
 
     // Byte trace ring buffer
     ByteTraceEntry _bytes[SERIAL_TRACE_BYTE_ENTRIES];
