@@ -44,6 +44,10 @@ constexpr uint8_t OPCODE_DISPLAY_WRITE_SPEED_LIM= 0x1f;
 // Event Log frame types
 constexpr uint8_t EVENT_LOG_ENTRY               = 0xee;
 constexpr uint8_t EVENT_LOG_DATA_ENTRY          = 0xed;
+// Multi-value debug telemetry (bbs-fw 0xEC): header, target current %,
+// target speed %, cadence rpm x10 (hi/lo), checksum.
+constexpr uint8_t EVENT_LOG_TELEMETRY_ENTRY     = 0xec;
+constexpr size_t  EVENT_LOG_TELEMETRY_SIZE      = 6;
 
 // Assist Flags
 constexpr uint8_t ASSIST_FLAG_PAS               = 0x01;
@@ -53,10 +57,13 @@ constexpr uint8_t ASSIST_FLAG_PAS_VARIABLE      = 0x08;
 constexpr uint8_t ASSIST_FLAG_PAS_TORQUE        = 0x10;
 constexpr uint8_t ASSIST_FLAG_OVERRIDE_CADENCE  = 0x20;
 constexpr uint8_t ASSIST_FLAG_OVERRIDE_SPEED    = 0x40;
+constexpr uint8_t ASSIST_FLAG_DISPLAY_TARGET_CURRENT = 0x80;  // v6: show target current on display
 
-// Config sizes
+// Config sizes / wire versions
 constexpr uint8_t BBS_FW_CONFIG_VERSION         = 5;
 constexpr size_t  BBS_FW_CONFIG_V5_SIZE         = 154;
+constexpr uint8_t BBS_FW_CONFIG_VERSION_6       = 6;
+constexpr size_t  BBS_FW_CONFIG_V6_SIZE         = 192;
 constexpr uint8_t BBS_FW_CONFIG_VERSION_4       = 4;
 constexpr size_t  BBS_FW_CONFIG_V4_SIZE         = 152;
 
@@ -186,7 +193,93 @@ struct BbsFwConfigV4 {
     AssistLevel sport_levels[10];
 };
 
+// Config version 6 (bbs-fw fork, "per-assist-level PAS min current and cadence
+// taper, display target current"). It is NOT a superset of v5:
+//   * the global `pas_keep_current_percent` / `pas_keep_current_cadence_rpm`
+//     header fields are gone (folded into the per-level min current + taper),
+//   * each assist level grew from 6 to 8 bytes.
+// Total size: 32-byte header + 2 * 10 * 8 = 192 bytes.
+struct AssistLevelV6 {
+    uint8_t flags;
+    uint8_t max_current_percent;             // target current before taper
+    uint8_t min_current_percent;             // current floor after taper
+    uint8_t taper_start_cadence_rpm;         // taper begins at this cadence
+    uint8_t taper_end_cadence_rpm;           // taper reaches min current here
+    uint8_t max_throttle_current_percent;
+    uint8_t max_speed_percent;
+    uint8_t torque_amplification_factor_x10;
+};
+
+struct BbsFwConfigV6 {
+    // Units
+    uint8_t use_freedom_units;
+
+    // Global electrical & motor
+    uint8_t max_current_amps;
+    uint8_t current_ramp_amps_s;
+    uint8_t max_battery_x100v_u16l;
+    uint8_t max_battery_x100v_u16h;
+    uint8_t low_cut_off_v;
+    uint8_t max_speed_kph;
+
+    // External sensors & accessories
+    uint8_t use_speed_sensor;
+    uint8_t use_shift_sensor;
+    uint8_t use_push_walk;
+    uint8_t use_temperature_sensor;
+    uint8_t lights_mode;
+    uint8_t use_pretension;
+    uint8_t pretension_speed_cutoff_kph;
+
+    // Speed sensor
+    uint8_t wheel_size_inch_x10_u16l;
+    uint8_t wheel_size_inch_x10_u16h;
+    uint8_t speed_sensor_signals;
+
+    // Pedal Assist (PAS) — note: no global keep-current fields in v6
+    uint8_t pas_start_delay_pulses;
+    uint8_t pas_stop_delay_x100s;
+
+    // Throttle
+    uint8_t throttle_start_voltage_mv_u16l;
+    uint8_t throttle_start_voltage_mv_u16h;
+    uint8_t throttle_end_voltage_mv_u16l;
+    uint8_t throttle_end_voltage_mv_u16h;
+    uint8_t throttle_start_percent;
+    uint8_t throttle_global_spd_lim_opt;
+    uint8_t throttle_global_spd_lim_percent;
+
+    // Shift sensor interrupt
+    uint8_t shift_interrupt_duration_ms_u16l;
+    uint8_t shift_interrupt_duration_ms_u16h;
+    uint8_t shift_interrupt_current_threshold_percent;
+
+    // Display walk mode field
+    uint8_t walk_mode_data_display;
+
+    // Assist mode options
+    uint8_t assist_mode_select;
+    uint8_t assist_startup_level;
+
+    // 10 Standard assist levels (0 - 9)
+    AssistLevelV6 standard_levels[10];
+
+    // 10 Sport assist levels (0 - 9)
+    AssistLevelV6 sport_levels[10];
+};
+
 #pragma pack(pop)
+
+// Version-tagged container. The controller reports its wire config version in
+// the firmware-version response and in the read-config header; only one of the
+// two layouts below is valid for a given session (v4 is read into the v5 view).
+struct BbsFwConfig {
+    uint8_t version;    // 4, 5 or 6 — the controller's detected config version
+    BbsFwConfigV5 v5;   // active when version is 4 or 5
+    BbsFwConfigV6 v6;   // active when version is 6
+
+    bool isV6() const { return version >= BBS_FW_CONFIG_VERSION_6; }
+};
 
 // Convert between the version-4 (152-byte) and version-5 (154-byte) config layouts.
 // The only difference is the two pretension fields at V5 byte offsets 12-13.
@@ -211,8 +304,10 @@ inline bool verifyChecksum(const uint8_t* buf, size_t length) {
 }
 
 void initDefaultBbsHdConfig(BbsFwConfigV5& cfg);
-bool serializeConfigToJson(const BbsFwConfigV5& cfg, JsonDocument& doc);
-bool deserializeConfigFromJson(const JsonDocument& doc, BbsFwConfigV5& cfg);
+// Serialize/deserialize using the layout selected by cfg.version (4/5 -> v5 view,
+// 6 -> v6 view). The caller must set cfg.version before deserializing.
+bool serializeConfigToJson(const BbsFwConfig& cfg, JsonDocument& doc);
+bool deserializeConfigFromJson(const JsonDocument& doc, BbsFwConfig& cfg);
 String getEventDescription(uint8_t eventId, int16_t data, bool hasData);
 const char* getControllerTypeName(ControllerType type);
 

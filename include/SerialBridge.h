@@ -30,8 +30,8 @@ public:
 
     // High-level controller operations (called from Web API)
     bool readFirmwareInfo(uint8_t& major, uint8_t& minor, uint8_t& patch, uint8_t& cfgVer, ControllerType& ctrlType, uint32_t timeoutMs = 2000);
-    bool readConfig(BbsFwConfigV5& config, uint32_t timeoutMs = 3000);
-    bool writeConfig(const BbsFwConfigV5& config, uint32_t timeoutMs = 3000);
+    bool readConfig(BbsFwConfig& config, uint32_t timeoutMs = 3000);
+    bool writeConfig(const BbsFwConfig& config, uint32_t timeoutMs = 3000);
     bool resetConfig(uint32_t timeoutMs = 2500);
     bool calibrateVoltage(float measuredVolts, uint32_t timeoutMs = 2500);
     bool enableEventLog(bool enable, uint32_t timeoutMs = 1500);

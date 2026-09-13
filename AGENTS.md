@@ -97,12 +97,40 @@ $$\text{Checksum} = \left( \sum_{i=0}^{N-1} \text{byte}_i \right) \pmod{256}$$
 | Write Mode | `0x0c` | 4 | `0x16, 0x0c, <0x02=Std, 0x04=Sport>, <chk>` |
 | Write Lights | `0x1a` | 3 | `0x16, 0x1a, <0xf0=Off, 0xf1=On>` |
 
+### Debug Telemetry Frame (`0xEC`, bbs-fw fork)
+The fork's `app_process()` periodically (every `DEBUG_TELEMETRY_INTERVAL_MS`, 500 ms) calls `eventlog_write_telemetry()` so the middleman can display live motor targets that the display protocol never exposes:
+
+```
+0xEC, target_current_percent, target_speed_percent, cadence_rpm_x10_hi, cadence_rpm_x10_lo, checksum
+```
+
+* `target_current_percent` / `target_speed_percent` are the final `motor_set_target_current()` / `motor_set_target_speed()` values (0–100).
+* `cadence_rpm_x10` is `pas_get_cadence_rpm_x10()` (pedal cadence × 10).
+* Checksum is the usual 8-bit sum over the first five bytes.
+* It is only emitted while the event log is enabled (the middleman enables it at boot via `enableEventLog(true)`).
+* The middleman parses it in both bridge paths — `processControllerRxPassThrough()` and `consumeControllerEventFrame()` — updates `TelemetryTracker::updateTargetTelemetry()`, and **swallows** it like the other event frames (never forwarded to the display). `/api/telemetry` exposes `hasTargetTelemetry`, `targetCurrentPercent`, `targetSpeedPercent`, `cadenceRpm`, which the dashboard "Motor Targets (bbs-fw)" card renders.
+
 ### Binary Configuration Struct Layout (Version 5, 154 Bytes)
 Defined in [`include/BbsFwProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/include/BbsFwProtocol.h):
 * Header fields: 34 bytes (limits, ramp rate, voltages, sensor enables, throttle bounds, PAS delays).
 * `standard_levels[10]`: $10 \times 6 = 60$ bytes (`AssistLevel`: flags, current%, throttle%, cadence%, speed%, torque_amp).
 * `sport_levels[10]`: $10 \times 6 = 60$ bytes.
 * Total size: $34 + 60 + 60 = 154$ bytes (`#pragma pack(push, 1)`).
+
+### Binary Configuration Struct Layout (Version 6, 192 Bytes)
+Config v6 (bbs-fw fork commit "per-assist-level PAS min current and cadence taper, display target current") is **not** a superset of v5:
+* Header fields: 32 bytes — the global `pas_keep_current_percent` / `pas_keep_current_cadence_rpm` are removed.
+* `standard_levels[10]` / `sport_levels[10]`: $2 \times 10 \times 8 = 160$ bytes (`AssistLevelV6`: flags, max_current%, min_current%, taper_start_cadence_rpm, taper_end_cadence_rpm, max_throttle%, max_speed%, torque_amp).
+* New flag `ASSIST_FLAG_DISPLAY_TARGET_CURRENT = 0x80` (show target current on the display instead of speed).
+* `assist_mode_select` gains values 3–12 (`PASn + Lights toggles mode`) and 13 (`Brake switch toggles mode on boot`); v5 only knows 0–2.
+* Total size: $32 + 160 = 192$ bytes.
+
+**Version-aware tooling (critical):** the firmware only accepts a write whose `version`/`length` match its own `CONFIG_VERSION`, so the tool detects the controller version and switches layout:
+* `SerialBridge::readConfig`/`writeConfig` take a version-tagged `BbsFwConfig` (`version`, `v5`, `v6` views) and frame v4 (152), v5 (154) or v6 (192) accordingly.
+* `_configVersion` is learned from the FW-version response and the read-config header; `getConfigVersion()` is authoritative.
+* `serializeConfigToJson`/`deserializeConfigFromJson` emit/consume the field set for `cfg.version` (`current`/`cadence` + global keep-current for v4/v5; `maxCurrent`/`minCurrent`/`taperStartCadence`/`taperEndCadence`/`displayTargetCurrent` for v6).
+* `handlePostConfig` returns HTTP 409 if the posted `configVersion` differs from the controller's, so importing a v6 profile while attached to a v5 controller cannot zero the EEPROM.
+* The web UI rebuilds its assist-level table columns from `configVersion` (`buildLevelTables(version)`), hides the global keep-current fields for v6, and extends the assist-mode options for v6.
 
 ### Wi-Fi Management (`WebPortal`)
 The ESP32-S3 has a **single 2.4 GHz radio**, so AP+STA coexistence is slow. The portal is therefore **station-first**:

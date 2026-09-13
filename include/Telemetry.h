@@ -34,6 +34,7 @@ public:
     void updateLights(bool on);
     void updateStatusCode(uint8_t code);
     void updateTemperature(int8_t controllerC, int8_t motorC);
+    void updateTargetTelemetry(uint8_t targetCurrentPercent, uint8_t targetSpeedPercent, uint16_t cadenceRpmX10);
     void updateFirmwareInfo(uint8_t major, uint8_t minor, uint8_t patch, uint8_t cfgVer, ControllerType type);
 
     // Activity tracking
@@ -83,6 +84,12 @@ private:
     int8_t _controllerTempC;
     int8_t _motorTempC;
     float _wheelSizeInch;
+
+    // Live bbs-fw motor targets (from the 0xEC debug telemetry frame)
+    bool _hasTargetTelemetry;
+    uint8_t _targetCurrentPercent;
+    uint8_t _targetSpeedPercent;
+    uint16_t _cadenceRpmX10;
 
     // Controller details
     uint8_t _fwMajor;

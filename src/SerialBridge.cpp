@@ -184,6 +184,25 @@ void SerialBridge::processControllerRxPassThrough() {
             _controllerBuf[_controllerBufLen++] = byteVal;
         }
 
+        // Multi-value debug telemetry frame (0xEC): target current %, target
+        // speed %, cadence rpm x10. Swallowed like the other event frames.
+        if (_controllerBufLen >= 1 && _controllerBuf[0] == EVENT_LOG_TELEMETRY_ENTRY) {
+            if (_controllerBufLen >= EVENT_LOG_TELEMETRY_SIZE) {
+                if (verifyChecksum(_controllerBuf, EVENT_LOG_TELEMETRY_SIZE)) {
+                    uint16_t cadenceX10 = (uint16_t)((_controllerBuf[3] << 8) | _controllerBuf[4]);
+                    Telemetry.updateTargetTelemetry(_controllerBuf[1], _controllerBuf[2], cadenceX10);
+                    Telemetry.recordIntercept();
+                    Debug.tracef("Telemetry: target %d%%, speed %d%%, cadence %d.%d rpm",
+                                 _controllerBuf[1], _controllerBuf[2],
+                                 cadenceX10 / 10, cadenceX10 % 10);
+                }
+                _controllerBufLen = 0;
+                continue;
+            }
+            // Still waiting for remaining telemetry bytes, do not forward yet
+            continue;
+        }
+
         // Check if this is an Event Log frame from bbs-fw
         if (_controllerBufLen >= 1 && (_controllerBuf[0] == EVENT_LOG_ENTRY || _controllerBuf[0] == EVENT_LOG_DATA_ENTRY)) {
             size_t evtSize = (_controllerBuf[0] == EVENT_LOG_ENTRY) ? 3 : 5;
@@ -438,15 +457,22 @@ void SerialBridge::flushQueuedDisplayWrites() {
 // CONTROLLER CONFIG TRANSACTIONS
 // -----------------------------------------------------------------------------
 
-// bbs-fw emits event-log frames asynchronously and they can land in the middle
-// of a config transaction. They must be swallowed (and parsed into telemetry)
-// rather than counted as the transaction response, otherwise a write gets
-// "checksum mismatch" and fails even though the controller accepted it.
-// Frame shapes: 0xEE <id> <chk> (3 bytes) or 0xED <id> <hi> <lo> <chk> (5 bytes).
-// `firstByte` has already been consumed by the caller.
+// bbs-fw emits event-log and debug-telemetry frames asynchronously and they can
+// land in the middle of a config transaction. They must be swallowed (and parsed
+// into telemetry) rather than counted as the transaction response, otherwise a
+// write gets "checksum mismatch" and fails even though the controller accepted it.
+// Frame shapes: 0xEE <id> <chk> (3), 0xED <id> <hi> <lo> <chk> (5),
+// 0xEC <cur> <spd> <cad_hi> <cad_lo> <chk> (6). `firstByte` is already consumed.
 bool SerialBridge::consumeControllerEventFrame(uint8_t firstByte, uint32_t deadlineMs) {
-    const size_t evtSize = (firstByte == EVENT_LOG_ENTRY) ? 3 : 5;
-    uint8_t frame[5];
+    size_t evtSize;
+    if (firstByte == EVENT_LOG_ENTRY) {
+        evtSize = 3;
+    } else if (firstByte == EVENT_LOG_DATA_ENTRY) {
+        evtSize = 5;
+    } else {
+        evtSize = EVENT_LOG_TELEMETRY_SIZE;
+    }
+    uint8_t frame[EVENT_LOG_TELEMETRY_SIZE];
     frame[0] = firstByte;
     size_t n = 1;
 
@@ -476,6 +502,15 @@ bool SerialBridge::consumeControllerEventFrame(uint8_t firstByte, uint32_t deadl
         return true;  // garbled frame consumed; keep waiting for the response
     }
 
+    if (firstByte == EVENT_LOG_TELEMETRY_ENTRY) {
+        uint16_t cadenceX10 = (uint16_t)((frame[3] << 8) | frame[4]);
+        Telemetry.updateTargetTelemetry(frame[1], frame[2], cadenceX10);
+        Telemetry.recordIntercept();
+        Debug.tracef("Telemetry during config: target %d%%, speed %d%%, cadence %d.%d rpm",
+                     frame[1], frame[2], cadenceX10 / 10, cadenceX10 % 10);
+        return true;
+    }
+
     int16_t evtData = 0;
     bool hasData = false;
     if (firstByte == EVENT_LOG_DATA_ENTRY) {
@@ -502,9 +537,10 @@ bool SerialBridge::receiveController(uint8_t* buf, size_t len, uint32_t timeoutM
             Telemetry.recordControllerRx(1);
             Debug.traceByte(TraceDir::ControllerRx, byteVal);
 
-            // At a frame boundary an async event-log frame may be interleaved
-            // with the response we are waiting for.
-            if (received == 0 && (byteVal == EVENT_LOG_ENTRY || byteVal == EVENT_LOG_DATA_ENTRY)) {
+            // At a frame boundary an async event-log or telemetry frame may be
+            // interleaved with the response we are waiting for.
+            if (received == 0 && (byteVal == EVENT_LOG_ENTRY || byteVal == EVENT_LOG_DATA_ENTRY ||
+                                  byteVal == EVENT_LOG_TELEMETRY_ENTRY)) {
                 if (!consumeControllerEventFrame(byteVal, deadlineMs)) {
                     return false;
                 }
@@ -592,7 +628,7 @@ bool SerialBridge::readFirmwareInfo(uint8_t& major, uint8_t& minor, uint8_t& pat
     return ok;
 }
 
-bool SerialBridge::readConfig(BbsFwConfigV5& config, uint32_t timeoutMs) {
+bool SerialBridge::readConfig(BbsFwConfig& config, uint32_t timeoutMs) {
     if (xSemaphoreTake(_bridgeMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
         Debug.trace("readConfig: mutex acquire failed");
         return false;
@@ -615,7 +651,7 @@ bool SerialBridge::readConfig(BbsFwConfigV5& config, uint32_t timeoutMs) {
 
     // Phase 1: read the 4-byte header (req, opcode, version, length) so we know
     // how many payload bytes to expect before we commit to a fixed-length receive.
-    uint8_t frame[4 + BBS_FW_CONFIG_V5_SIZE + 1]; // max possible V5 frame = 159 bytes
+    uint8_t frame[4 + BBS_FW_CONFIG_V6_SIZE + 1]; // max possible V6 frame = 197 bytes
     bool ok = receiveController(frame, 4, timeoutMs);
 
     if (!ok) {
@@ -626,7 +662,8 @@ bool SerialBridge::readConfig(BbsFwConfigV5& config, uint32_t timeoutMs) {
         _configVersion = ver;
         Debug.tracef("readConfig header: ver=%d len=%d", ver, len);
 
-        bool knownLen = (ver == BBS_FW_CONFIG_VERSION && len == BBS_FW_CONFIG_V5_SIZE) ||
+        bool knownLen = (ver == BBS_FW_CONFIG_VERSION_6 && len == BBS_FW_CONFIG_V6_SIZE) ||
+                        (ver == BBS_FW_CONFIG_VERSION && len == BBS_FW_CONFIG_V5_SIZE) ||
                         (ver == BBS_FW_CONFIG_VERSION_4 && len == BBS_FW_CONFIG_V4_SIZE);
         size_t total = 4 + (size_t)len + 1; // header + payload + checksum
 
@@ -637,12 +674,15 @@ bool SerialBridge::readConfig(BbsFwConfigV5& config, uint32_t timeoutMs) {
             if (ok) {
                 ok = verifyChecksum(frame, total);
                 if (ok) {
-                    if (ver == BBS_FW_CONFIG_VERSION_4) {
+                    config.version = ver;
+                    if (ver == BBS_FW_CONFIG_VERSION_6) {
+                        memcpy(&config.v6, frame + 4, BBS_FW_CONFIG_V6_SIZE);
+                    } else if (ver == BBS_FW_CONFIG_VERSION_4) {
                         BbsFwConfigV4 v4;
                         memcpy(&v4, frame + 4, BBS_FW_CONFIG_V4_SIZE);
-                        convertConfigV4toV5(v4, config);
+                        convertConfigV4toV5(v4, config.v5);
                     } else {
-                        memcpy(&config, frame + 4, BBS_FW_CONFIG_V5_SIZE);
+                        memcpy(&config.v5, frame + 4, BBS_FW_CONFIG_V5_SIZE);
                     }
                     Telemetry.addEvent(2, 0, false); // EVT_MSG_CONFIG_READ_DONE
                     Debug.tracef("readConfig OK: ver=%d len=%d", ver, len);
@@ -665,7 +705,7 @@ bool SerialBridge::readConfig(BbsFwConfigV5& config, uint32_t timeoutMs) {
     return ok;
 }
 
-bool SerialBridge::writeConfig(const BbsFwConfigV5& config, uint32_t timeoutMs) {
+bool SerialBridge::writeConfig(const BbsFwConfig& config, uint32_t timeoutMs) {
     if (xSemaphoreTake(_bridgeMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
         Debug.trace("writeConfig: mutex acquire failed");
         return false;
@@ -676,22 +716,33 @@ bool SerialBridge::writeConfig(const BbsFwConfigV5& config, uint32_t timeoutMs) 
     delay(BUS_QUIET_TIME_MS);
 
     // Frame: 0x02, 0xf1, version, len, ...config bytes..., checksum
-    // Frame the write in the controller's own config version: V4 (152 bytes) if the
-    // controller predates the pretension fields, else V5 (154 bytes).
+    // The controller only accepts its own config version: V6 (192 bytes), V5
+    // (154 bytes) or the legacy V4 (152 bytes).
+    uint8_t targetVersion = _configVersion;
+    if (targetVersion != BBS_FW_CONFIG_VERSION_6 &&
+        targetVersion != BBS_FW_CONFIG_VERSION &&
+        targetVersion != BBS_FW_CONFIG_VERSION_4) {
+        targetVersion = config.version;  // version unknown: trust the caller
+    }
+
     uint8_t ver;
     size_t cfgSize;
-    uint8_t txBuf[4 + BBS_FW_CONFIG_V5_SIZE + 1]; // max V5 frame
+    uint8_t txBuf[4 + BBS_FW_CONFIG_V6_SIZE + 1]; // max V6 frame
 
-    if (_configVersion == BBS_FW_CONFIG_VERSION_4) {
+    if (targetVersion == BBS_FW_CONFIG_VERSION_6) {
+        ver = BBS_FW_CONFIG_VERSION_6;
+        cfgSize = BBS_FW_CONFIG_V6_SIZE;
+        memcpy(txBuf + 4, &config.v6, BBS_FW_CONFIG_V6_SIZE);
+    } else if (targetVersion == BBS_FW_CONFIG_VERSION_4) {
         BbsFwConfigV4 v4;
-        convertConfigV5toV4(config, v4);
+        convertConfigV5toV4(config.v5, v4);
         ver = BBS_FW_CONFIG_VERSION_4;
         cfgSize = BBS_FW_CONFIG_V4_SIZE;
         memcpy(txBuf + 4, &v4, BBS_FW_CONFIG_V4_SIZE);
     } else {
         ver = BBS_FW_CONFIG_VERSION;
         cfgSize = BBS_FW_CONFIG_V5_SIZE;
-        memcpy(txBuf + 4, &config, BBS_FW_CONFIG_V5_SIZE);
+        memcpy(txBuf + 4, &config.v5, BBS_FW_CONFIG_V5_SIZE);
     }
 
     const size_t txLen = 4 + cfgSize + 1;

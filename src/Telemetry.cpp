@@ -18,6 +18,10 @@ TelemetryTracker::TelemetryTracker()
     , _controllerTempC(25)
     , _motorTempC(25)
     , _wheelSizeInch(27.5f)
+    , _hasTargetTelemetry(false)
+    , _targetCurrentPercent(0)
+    , _targetSpeedPercent(0)
+    , _cadenceRpmX10(0)
     , _fwMajor(0)
     , _fwMinor(0)
     , _fwPatch(0)
@@ -112,6 +116,16 @@ void TelemetryTracker::updateTemperature(int8_t controllerC, int8_t motorC) {
     if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         _controllerTempC = controllerC;
         _motorTempC = motorC;
+        xSemaphoreGive(_mutex);
+    }
+}
+
+void TelemetryTracker::updateTargetTelemetry(uint8_t targetCurrentPercent, uint8_t targetSpeedPercent, uint16_t cadenceRpmX10) {
+    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        _targetCurrentPercent = targetCurrentPercent;
+        _targetSpeedPercent = targetSpeedPercent;
+        _cadenceRpmX10 = cadenceRpmX10;
+        _hasTargetTelemetry = true;
         xSemaphoreGive(_mutex);
     }
 }
@@ -234,6 +248,12 @@ void TelemetryTracker::buildTelemetryJson(JsonDocument& doc) {
         doc["statusCode"] = _statusCode;
         doc["controllerTempC"] = _controllerTempC;
         doc["motorTempC"] = _motorTempC;
+
+        // Live bbs-fw targets, pushed from the firmware's 0xEC debug frame.
+        doc["hasTargetTelemetry"] = _hasTargetTelemetry;
+        doc["targetCurrentPercent"] = _targetCurrentPercent;
+        doc["targetSpeedPercent"] = _targetSpeedPercent;
+        doc["cadenceRpm"] = serialized(String(_cadenceRpmX10 / 10.0f, 1));
 
         doc["displayConnected"] = isDisplayActive();
         doc["controllerConnected"] = isControllerActive();

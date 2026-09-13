@@ -265,7 +265,7 @@ void WebPortal::handleEvents() {
 }
 
 void WebPortal::handleGetConfig() {
-    BbsFwConfigV5 cfg;
+    BbsFwConfig cfg;
     bool ok = Bridge.readConfig(cfg, 3500);
 
     if (!ok) {
@@ -301,7 +301,28 @@ void WebPortal::handlePostConfig() {
         return;
     }
 
-    BbsFwConfigV5 cfg;
+    // The controller's detected version is authoritative. Refuse a payload built
+    // for a different layout (e.g. a v6 JSON profile imported while connected to a
+    // v5 controller) rather than zeroing the mismatched fields.
+    uint8_t ver = Bridge.getConfigVersion();
+    if (ver != BBS_FW_CONFIG_VERSION_6 && ver != BBS_FW_CONFIG_VERSION && ver != BBS_FW_CONFIG_VERSION_4) {
+        ver = (uint8_t)(doc["configVersion"] | BBS_FW_CONFIG_VERSION);
+    }
+    if (ver != BBS_FW_CONFIG_VERSION_6 && ver != BBS_FW_CONFIG_VERSION && ver != BBS_FW_CONFIG_VERSION_4) {
+        ver = BBS_FW_CONFIG_VERSION;
+    }
+
+    uint8_t payloadVer = doc["configVersion"] | 0;
+    if (payloadVer != 0 && payloadVer != ver) {
+        _server.send(409, "application/json",
+                     "{\"success\":false,\"error\":\"Config version mismatch: payload is v"
+                     + String(payloadVer) + " but the controller is v" + String(ver)
+                     + ". Read from the controller and retry.\"}");
+        return;
+    }
+
+    BbsFwConfig cfg;
+    cfg.version = ver;
     deserializeConfigFromJson(doc, cfg);
 
     bool ok = Bridge.writeConfig(cfg, 3500);

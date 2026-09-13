@@ -204,6 +204,27 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
           </div>
         </div>
       </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Motor Targets (bbs-fw)</span>
+          <span class="badge badge-neutral" id="val-targets-state">waiting</span>
+        </div>
+        <div style="margin-top:8px;">
+          <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+            <span style="color:var(--text-muted)">Target Current</span>
+            <strong id="val-target-current">--</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+            <span style="color:var(--text-muted)">Target Speed</span>
+            <strong id="val-target-speed">--</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between;">
+            <span style="color:var(--text-muted)">Pedal Cadence</span>
+            <strong id="val-cadence">--</strong>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Quick Controls -->
@@ -235,6 +256,7 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
   <div id="cfg-banner" class="action-banner" style="display:none;">
     <div>
       <strong style="font-size:1.05rem;">BBS-FW Controller Configuration</strong>
+      <span class="badge badge-neutral" id="cfg-version-badge" style="margin-left:8px;">config v?</span>
       <p style="font-size:0.8rem; color:var(--text-muted)">The middleman will seamlessly isolate the display while reading or flashing EEPROM.</p>
     </div>
     <div class="btn-group">
@@ -313,14 +335,19 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
           <input type="number" step="10" class="form-control" id="cfg-pasStopDelayMs" min="50" max="1000">
           <small>Delay before motor stops after pedaling stops. 150-250ms is optimal.</small>
         </div>
-        <div class="form-group">
-          <label>PAS Keep Current (%)</label>
-          <input type="number" class="form-control" id="cfg-pasKeepCurrentPercent" min="10" max="100">
-          <small>Current maintained during high cadence pedaling.</small>
+        <div id="cfg-pas-keepcurrent-group">
+          <div class="form-group">
+            <label>PAS Keep Current (%)</label>
+            <input type="number" class="form-control" id="cfg-pasKeepCurrentPercent" min="10" max="100">
+            <small>Current maintained during high cadence pedaling.</small>
+          </div>
+          <div class="form-group">
+            <label>PAS Keep Current Cadence (RPM)</label>
+            <input type="number" class="form-control" id="cfg-pasKeepCurrentCadenceRpm" min="0" max="255">
+          </div>
         </div>
-        <div class="form-group">
-          <label>PAS Keep Current Cadence (RPM)</label>
-          <input type="number" class="form-control" id="cfg-pasKeepCurrentCadenceRpm" min="0" max="255">
+        <div class="form-group" id="cfg-pas-v6-note" style="display:none;">
+          <small style="color:var(--accent-cyan);">Config v6 controllers configure minimum current and the cadence taper per assist level — see the Standard/Sport Levels tabs.</small>
         </div>
       </div>
 
@@ -361,25 +388,10 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
   <div id="tab-levels-std" class="tab-content">
     <div class="card">
       <h3 class="card-title" style="margin-bottom:8px;">Standard Assist Levels (0 - 9)</h3>
-      <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:14px;">Configure target motor current %, throttle %, cadence %, and override flags per assist level.</p>
+      <p id="levels-std-note" style="font-size:0.8rem; color:var(--text-muted); margin-bottom:14px;">Configure per-assist-level current, throttle %, cadence, and override flags.</p>
       <div class="table-wrapper">
         <table id="tbl-levels-std">
-          <thead>
-            <tr>
-              <th>Lvl</th>
-              <th>Current %</th>
-              <th>Max Throt %</th>
-              <th>Cadence %</th>
-              <th>Speed %</th>
-              <th>PAS</th>
-              <th>Throt</th>
-              <th>Cruise</th>
-              <th>Cad. Over</th>
-              <th>Spd. Over</th>
-              <th>PAS Var</th>
-              <th>PAS Torq</th>
-            </tr>
-          </thead>
+          <thead></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -390,25 +402,10 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
   <div id="tab-levels-sport" class="tab-content">
     <div class="card">
       <h3 class="card-title" style="margin-bottom:8px;">Sport Assist Levels (0 - 9)</h3>
-      <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:14px;">Sport mode active levels (triggered via mode switch or display).</p>
+      <p id="levels-sport-note" style="font-size:0.8rem; color:var(--text-muted); margin-bottom:14px;">Sport mode active levels (triggered via mode switch or display).</p>
       <div class="table-wrapper">
         <table id="tbl-levels-sport">
-          <thead>
-            <tr>
-              <th>Lvl</th>
-              <th>Current %</th>
-              <th>Max Throt %</th>
-              <th>Cadence %</th>
-              <th>Speed %</th>
-              <th>PAS</th>
-              <th>Throt</th>
-              <th>Cruise</th>
-              <th>Cad. Over</th>
-              <th>Spd. Over</th>
-              <th>PAS Var</th>
-              <th>PAS Torq</th>
-            </tr>
-          </thead>
+          <thead></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -646,32 +643,77 @@ function switchTab(tabId) {
   updateDebugPolling();
 }
 
-// Build Assist Level Tables
-function buildLevelTables() {
+// Build Assist Level Tables for the controller's config version.
+// v4/v5 levels: flags, target current %, max throttle %, max cadence %, max speed %.
+// v6 levels:    flags, max/min current %, cadence taper start/end (RPM), max throttle %, max speed %.
+let levelsTableVersion = null;
+
+function buildLevelTables(version) {
+  const v6 = version >= 6;
+  levelsTableVersion = version;
+
   ['std', 'sport'].forEach(type => {
-    const tbody = document.querySelector(`#tbl-levels-${type} tbody`);
+    const table = document.getElementById(`tbl-levels-${type}`);
+    const thead = table.querySelector('thead');
+    const tbody = table.querySelector('tbody');
+
+    const heads = v6
+      ? ['Lvl', 'Max Cur %', 'Min Cur %', 'Taper Start', 'Taper End', 'Max Throt %', 'Speed %',
+         'PAS', 'Throt', 'Cruise', 'Cad. Over', 'Spd. Over', 'PAS Var', 'PAS Torq', 'Disp Tgt']
+      : ['Lvl', 'Current %', 'Max Throt %', 'Cadence %', 'Speed %',
+         'PAS', 'Throt', 'Cruise', 'Cad. Over', 'Spd. Over', 'PAS Var', 'PAS Torq'];
+    thead.innerHTML = '<tr>' + heads.map(h => '<th>' + h + '</th>').join('') + '</tr>';
+
     tbody.innerHTML = '';
     for (let i = 0; i < 10; ++i) {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td><strong>${i}</strong></td>
-        <td><input type="number" min="0" max="100" id="${type}-curr-${i}"></td>
-        <td><input type="number" min="0" max="100" id="${type}-throt-${i}"></td>
-        <td><input type="number" min="0" max="100" id="${type}-cad-${i}"></td>
-        <td><input type="number" min="0" max="100" id="${type}-spd-${i}"></td>
+      const numeric = v6
+        ? `<td><input type="number" min="0" max="100" id="${type}-maxcur-${i}"></td>
+           <td><input type="number" min="0" max="100" id="${type}-mincur-${i}"></td>
+           <td><input type="number" min="0" max="255" id="${type}-tstart-${i}"></td>
+           <td><input type="number" min="0" max="255" id="${type}-tend-${i}"></td>
+           <td><input type="number" min="0" max="100" id="${type}-throt-${i}"></td>
+           <td><input type="number" min="0" max="100" id="${type}-spd-${i}"></td>`
+        : `<td><input type="number" min="0" max="100" id="${type}-curr-${i}"></td>
+           <td><input type="number" min="0" max="100" id="${type}-throt-${i}"></td>
+           <td><input type="number" min="0" max="100" id="${type}-cad-${i}"></td>
+           <td><input type="number" min="0" max="100" id="${type}-spd-${i}"></td>`;
+
+      const flags = `
         <td><input type="checkbox" id="${type}-pas-${i}"></td>
         <td><input type="checkbox" id="${type}-th-${i}"></td>
         <td><input type="checkbox" id="${type}-cr-${i}"></td>
         <td><input type="checkbox" id="${type}-oc-${i}"></td>
         <td><input type="checkbox" id="${type}-os-${i}"></td>
         <td><input type="checkbox" id="${type}-pv-${i}"></td>
-        <td><input type="checkbox" id="${type}-pt-${i}"></td>
-      `;
+        <td><input type="checkbox" id="${type}-pt-${i}"></td>`;
+      const dtc = v6 ? `<td><input type="checkbox" id="${type}-dtc-${i}"></td>` : '';
+
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td><strong>${i}</strong></td>${numeric}${flags}${dtc}`;
       tbody.appendChild(tr);
     }
   });
+
+  const note = v6
+    ? 'Config v6: per-level max/min current % and a cadence (RPM) taper range.'
+    : 'Configure target motor current %, throttle %, cadence %, and override flags per assist level.';
+  document.getElementById('levels-std-note').textContent = note;
+  document.getElementById('levels-sport-note').textContent = note;
 }
-buildLevelTables();
+buildLevelTables(5);
+
+// Assist mode options differ between v5 (0-2) and v6 (0-13).
+function setAssistModeOptions(version) {
+  const sel = document.getElementById('cfg-assistModeSelect');
+  const keep = sel.value;
+  const opts = [['', ''], ['0', 'Off (Fixed mode)'], ['1', 'Standard (Display button)'], ['2', 'Lights (Headlight switch)']];
+  if (version >= 6) {
+    for (let i = 0; i <= 9; ++i) opts.push([String(3 + i), 'PAS ' + i + ' + Lights toggles mode']);
+    opts.push(['13', 'Brake switch toggles mode on boot']);
+  }
+  sel.innerHTML = opts.map(o => `<option value="${o[0]}">${o[1]}</option>`).join('');
+  if (keep !== '') sel.value = keep;
+}
 
 // Live Telemetry Polling
 async function pollTelemetry() {
@@ -695,6 +737,15 @@ async function pollTelemetry() {
 
     document.getElementById('val-temp-ctrl').innerText = d.controllerTempC + ' °C';
     document.getElementById('val-temp-motor').innerText = d.motorTempC + ' °C';
+
+    // Live bbs-fw targets (0xEC debug telemetry frame)
+    const hasTargets = d.hasTargetTelemetry === true;
+    document.getElementById('val-target-current').innerText = hasTargets ? (d.targetCurrentPercent + ' %') : '--';
+    document.getElementById('val-target-speed').innerText = hasTargets ? (d.targetSpeedPercent + ' %') : '--';
+    document.getElementById('val-cadence').innerText = hasTargets ? (d.cadenceRpm + ' RPM') : '--';
+    const targetsState = document.getElementById('val-targets-state');
+    targetsState.innerText = hasTargets ? 'live' : 'waiting';
+    targetsState.className = 'badge ' + (hasTargets ? 'badge-active' : 'badge-neutral');
 
     const dispPill = document.getElementById('status-disp');
     dispPill.innerText = d.displayConnected ? 'Display: Live' : 'Display: Offline';
@@ -828,7 +879,22 @@ async function fetchConfigFromController() {
 }
 
 function populateConfigForm(cfg) {
+  const version = (typeof cfg.configVersion === 'number') ? cfg.configVersion : 5;
+  const v6 = version >= 6;
+
+  if (levelsTableVersion !== version) buildLevelTables(version);
+  setAssistModeOptions(version);
+
+  const badge = document.getElementById('cfg-version-badge');
+  badge.textContent = 'config v' + version;
+  badge.className = 'badge ' + (v6 ? 'badge-active' : 'badge-neutral');
+
+  // v4/v5 keep a global keep-current; v6 folds it into per-level min current.
+  document.getElementById('cfg-pas-keepcurrent-group').style.display = v6 ? 'none' : 'block';
+  document.getElementById('cfg-pas-v6-note').style.display = v6 ? 'block' : 'none';
+
   formTorque = { std: new Array(10).fill(null), sport: new Array(10).fill(null) };
+
   document.getElementById('cfg-maxCurrent').value = cfg.maxCurrent;
   document.getElementById('cfg-currentRamp').value = cfg.currentRamp;
   document.getElementById('cfg-maxBatteryVolts').value = cfg.maxBatteryVolts;
@@ -840,8 +906,10 @@ function populateConfigForm(cfg) {
 
   document.getElementById('cfg-pasStartDelay').value = cfg.pasStartDelay;
   document.getElementById('cfg-pasStopDelayMs').value = cfg.pasStopDelayMs;
-  document.getElementById('cfg-pasKeepCurrentPercent').value = cfg.pasKeepCurrentPercent;
-  document.getElementById('cfg-pasKeepCurrentCadenceRpm').value = cfg.pasKeepCurrentCadenceRpm;
+  if (!v6) {
+    document.getElementById('cfg-pasKeepCurrentPercent').value = cfg.pasKeepCurrentPercent;
+    document.getElementById('cfg-pasKeepCurrentCadenceRpm').value = cfg.pasKeepCurrentCadenceRpm;
+  }
 
   document.getElementById('cfg-throttleStartMv').value = cfg.throttleStartMv;
   document.getElementById('cfg-throttleEndMv').value = cfg.throttleEndMv;
@@ -858,46 +926,38 @@ function populateConfigForm(cfg) {
   document.getElementById('cfg-usePushWalk').checked = cfg.usePushWalk;
   document.getElementById('cfg-walkModeDisplay').value = cfg.walkModeDisplay;
   document.getElementById('cfg-assistStartupLevel').value = cfg.assistStartupLevel;
-  if (cfg.assistModeSelect !== undefined) {
-    document.getElementById('cfg-assistModeSelect').value = cfg.assistModeSelect;
-  }
+  document.getElementById('cfg-assistModeSelect').value =
+    (cfg.assistModeSelect === undefined || cfg.assistModeSelect === null) ? '' : cfg.assistModeSelect;
 
-  // Populate matrix tables
-  if (cfg.standardLevels) {
-    cfg.standardLevels.forEach((lvl, i) => {
+  // Populate matrix tables for the detected layout.
+  ['std', 'sport'].forEach(type => {
+    const arr = (type === 'std') ? cfg.standardLevels : cfg.sportLevels;
+    if (!arr) return;
+    const $ = id => document.getElementById(id);
+    arr.forEach((lvl, i) => {
       if (i > 9) return;
-      document.getElementById(`std-curr-${i}`).value = lvl.current;
-      document.getElementById(`std-throt-${i}`).value = lvl.maxThrottle;
-      document.getElementById(`std-cad-${i}`).value = lvl.cadence;
-      document.getElementById(`std-spd-${i}`).value = lvl.speed;
-      document.getElementById(`std-pas-${i}`).checked = lvl.pas;
-      document.getElementById(`std-th-${i}`).checked = lvl.throttle;
-      document.getElementById(`std-cr-${i}`).checked = lvl.cruise;
-      document.getElementById(`std-oc-${i}`).checked = lvl.overrideCadence;
-      document.getElementById(`std-os-${i}`).checked = lvl.overrideSpeed;
-      if (document.getElementById(`std-pv-${i}`)) document.getElementById(`std-pv-${i}`).checked = lvl.pasVariable || false;
-      if (document.getElementById(`std-pt-${i}`)) document.getElementById(`std-pt-${i}`).checked = lvl.pasTorque || false;
-      formTorque.std[i] = (typeof lvl.torqueAmp === 'number') ? lvl.torqueAmp : null;
+      if (v6) {
+        $(`${type}-maxcur-${i}`).value = lvl.maxCurrent;
+        $(`${type}-mincur-${i}`).value = lvl.minCurrent;
+        $(`${type}-tstart-${i}`).value = lvl.taperStartCadence;
+        $(`${type}-tend-${i}`).value = lvl.taperEndCadence;
+      } else {
+        $(`${type}-curr-${i}`).value = lvl.current;
+        $(`${type}-cad-${i}`).value = lvl.cadence;
+      }
+      $(`${type}-throt-${i}`).value = lvl.maxThrottle;
+      $(`${type}-spd-${i}`).value = lvl.speed;
+      $(`${type}-pas-${i}`).checked = lvl.pas;
+      $(`${type}-th-${i}`).checked = lvl.throttle;
+      $(`${type}-cr-${i}`).checked = lvl.cruise;
+      $(`${type}-oc-${i}`).checked = lvl.overrideCadence;
+      $(`${type}-os-${i}`).checked = lvl.overrideSpeed;
+      $(`${type}-pv-${i}`).checked = lvl.pasVariable || false;
+      $(`${type}-pt-${i}`).checked = lvl.pasTorque || false;
+      if (v6) $(`${type}-dtc-${i}`).checked = lvl.displayTargetCurrent || false;
+      formTorque[type][i] = (typeof lvl.torqueAmp === 'number') ? lvl.torqueAmp : null;
     });
-  }
-
-  if (cfg.sportLevels) {
-    cfg.sportLevels.forEach((lvl, i) => {
-      if (i > 9) return;
-      document.getElementById(`sport-curr-${i}`).value = lvl.current;
-      document.getElementById(`sport-throt-${i}`).value = lvl.maxThrottle;
-      document.getElementById(`sport-cad-${i}`).value = lvl.cadence;
-      document.getElementById(`sport-spd-${i}`).value = lvl.speed;
-      document.getElementById(`sport-pas-${i}`).checked = lvl.pas;
-      document.getElementById(`sport-th-${i}`).checked = lvl.throttle;
-      document.getElementById(`sport-cr-${i}`).checked = lvl.cruise;
-      document.getElementById(`sport-oc-${i}`).checked = lvl.overrideCadence;
-      document.getElementById(`sport-os-${i}`).checked = lvl.overrideSpeed;
-      if (document.getElementById(`sport-pv-${i}`)) document.getElementById(`sport-pv-${i}`).checked = lvl.pasVariable || false;
-      if (document.getElementById(`sport-pt-${i}`)) document.getElementById(`sport-pt-${i}`).checked = lvl.pasTorque || false;
-      formTorque.sport[i] = (typeof lvl.torqueAmp === 'number') ? lvl.torqueAmp : null;
-    });
-  }
+  });
 }
 
 // Read a numeric box as a number, or null when it is empty/invalid. Nothing in
@@ -921,7 +981,9 @@ function formFloat(id) {
 }
 
 function collectConfigFromForm() {
+  const v6 = levelsTableVersion >= 6;
   const cfg = {
+    configVersion: levelsTableVersion,
     maxCurrent: formInt('cfg-maxCurrent'),
     currentRamp: formInt('cfg-currentRamp'),
     maxBatteryVolts: formFloat('cfg-maxBatteryVolts'),
@@ -932,8 +994,6 @@ function collectConfigFromForm() {
     freedomUnits: formInt('cfg-freedomUnits'),
     pasStartDelay: formInt('cfg-pasStartDelay'),
     pasStopDelayMs: formInt('cfg-pasStopDelayMs'),
-    pasKeepCurrentPercent: formInt('cfg-pasKeepCurrentPercent'),
-    pasKeepCurrentCadenceRpm: formInt('cfg-pasKeepCurrentCadenceRpm'),
     throttleStartMv: formInt('cfg-throttleStartMv'),
     throttleEndMv: formInt('cfg-throttleEndMv'),
     throttleStartPercent: formInt('cfg-throttleStartPercent'),
@@ -952,26 +1012,43 @@ function collectConfigFromForm() {
     standardLevels: [],
     sportLevels: []
   };
+  if (!v6) {
+    cfg.pasKeepCurrentPercent = formInt('cfg-pasKeepCurrentPercent');
+    cfg.pasKeepCurrentCadenceRpm = formInt('cfg-pasKeepCurrentCadenceRpm');
+  }
 
   ['std', 'sport'].forEach(type => {
     const targetArr = (type === 'std') ? cfg.standardLevels : cfg.sportLevels;
+    const checked = id => {
+      const el = document.getElementById(id);
+      return el ? el.checked : false;
+    };
     for (let i = 0; i < 10; ++i) {
-      targetArr.push({
-        current: formInt(`${type}-curr-${i}`),
+      const lvl = {
+        pas: checked(`${type}-pas-${i}`),
+        throttle: checked(`${type}-th-${i}`),
+        cruise: checked(`${type}-cr-${i}`),
+        overrideCadence: checked(`${type}-oc-${i}`),
+        overrideSpeed: checked(`${type}-os-${i}`),
+        pasVariable: checked(`${type}-pv-${i}`),
+        pasTorque: checked(`${type}-pt-${i}`),
         maxThrottle: formInt(`${type}-throt-${i}`),
-        cadence: formInt(`${type}-cad-${i}`),
         speed: formInt(`${type}-spd-${i}`),
-        pas: document.getElementById(`${type}-pas-${i}`).checked,
-        throttle: document.getElementById(`${type}-th-${i}`).checked,
-        cruise: document.getElementById(`${type}-cr-${i}`).checked,
-        overrideCadence: document.getElementById(`${type}-oc-${i}`).checked,
-        overrideSpeed: document.getElementById(`${type}-os-${i}`).checked,
-        pasVariable: document.getElementById(`${type}-pv-${i}`) ? document.getElementById(`${type}-pv-${i}`).checked : false,
-        pasTorque: document.getElementById(`${type}-pt-${i}`) ? document.getElementById(`${type}-pt-${i}`).checked : false,
         // Torque amplification has no input box; carry over the value the
         // controller reported instead of overwriting it with a made-up default.
         torqueAmp: formTorque[type][i]
-      });
+      };
+      if (v6) {
+        lvl.maxCurrent = formInt(`${type}-maxcur-${i}`);
+        lvl.minCurrent = formInt(`${type}-mincur-${i}`);
+        lvl.taperStartCadence = formInt(`${type}-tstart-${i}`);
+        lvl.taperEndCadence = formInt(`${type}-tend-${i}`);
+        lvl.displayTargetCurrent = checked(`${type}-dtc-${i}`);
+      } else {
+        lvl.current = formInt(`${type}-curr-${i}`);
+        lvl.cadence = formInt(`${type}-cad-${i}`);
+      }
+      targetArr.push(lvl);
     }
   });
 
@@ -981,22 +1058,29 @@ function collectConfigFromForm() {
 // Returns the name of the first required field that was never read/entered,
 // or null when the form holds a complete configuration.
 function findMissingConfigField(cfg) {
+  const v6 = levelsTableVersion >= 6;
   const scalars = [
     'maxCurrent', 'currentRamp', 'maxBatteryVolts', 'lowCutoffVolts', 'maxSpeed',
     'wheelSizeInch', 'speedSensorSignals', 'freedomUnits', 'pasStartDelay',
-    'pasStopDelayMs', 'pasKeepCurrentPercent', 'pasKeepCurrentCadenceRpm',
-    'throttleStartMv', 'throttleEndMv', 'throttleStartPercent',
+    'pasStopDelayMs', 'throttleStartMv', 'throttleEndMv', 'throttleStartPercent',
     'throttleGlobalSpdLimOpt', 'throttleGlobalSpdLimPercent',
     'shiftInterruptDurationMs', 'shiftInterruptCurrentThreshold',
     'temperatureSensor', 'lightsMode', 'walkModeDisplay', 'assistStartupLevel',
     'assistModeSelect'
   ];
+  if (!v6) scalars.push('pasKeepCurrentPercent', 'pasKeepCurrentCadenceRpm');
+
   for (const key of scalars) {
     if (cfg[key] === null || cfg[key] === undefined || Number.isNaN(cfg[key])) return key;
   }
+
+  const levelKeys = v6
+    ? ['maxCurrent', 'minCurrent', 'taperStartCadence', 'taperEndCadence', 'maxThrottle', 'speed', 'torqueAmp']
+    : ['current', 'maxThrottle', 'cadence', 'speed', 'torqueAmp'];
+
   for (const type of ['standardLevels', 'sportLevels']) {
     for (let i = 0; i < cfg[type].length; ++i) {
-      for (const key of ['current', 'maxThrottle', 'cadence', 'speed', 'torqueAmp']) {
+      for (const key of levelKeys) {
         const v = cfg[type][i][key];
         if (v === null || v === undefined || Number.isNaN(v)) return `${type} level ${i} ${key}`;
       }
@@ -1316,6 +1400,11 @@ function parsePacket(bytes, dir) {
   if (bytes[0] === 0xed && bytes.length >= 5) {
     let d = (bytes[2] << 8) | bytes[3];
     return 'Event #' + bytes[1] + ' data=' + d;
+  }
+  // Multi-value debug telemetry frame (0xEC)
+  if (bytes[0] === 0xec && bytes.length >= 6) {
+    const cad = ((bytes[3] << 8) | bytes[4]) / 10;
+    return 'Telemetry: target ' + bytes[1] + '% / speed ' + bytes[2] + '% / cadence ' + cad.toFixed(1);
   }
   // Controller response parsing (crx = controller→middleman)
   if (dir === 'crx') {

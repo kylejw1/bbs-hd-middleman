@@ -3,8 +3,10 @@
 // Compile-time guards: struct packing/size drift would corrupt the controller EEPROM
 // (AGENTS.md rule #1). Fail the build loudly if these ever move.
 static_assert(sizeof(BbsFwConfigV5) == BBS_FW_CONFIG_V5_SIZE, "BbsFwConfigV5 size changed");
+static_assert(sizeof(BbsFwConfigV6) == BBS_FW_CONFIG_V6_SIZE, "BbsFwConfigV6 size changed");
 static_assert(sizeof(BbsFwConfigV4) == BBS_FW_CONFIG_V4_SIZE, "BbsFwConfigV4 size changed");
 static_assert(sizeof(AssistLevel) == 6, "AssistLevel size changed");
+static_assert(sizeof(AssistLevelV6) == 8, "AssistLevelV6 size changed");
 
 void convertConfigV4toV5(const BbsFwConfigV4& src, BbsFwConfigV5& dst) {
     uint8_t* d = reinterpret_cast<uint8_t*>(&dst);
@@ -110,215 +112,299 @@ void initDefaultBbsHdConfig(BbsFwConfigV5& cfg) {
     }
 }
 
-bool serializeConfigToJson(const BbsFwConfigV5& cfg, JsonDocument& doc) {
-    doc["freedomUnits"] = cfg.use_freedom_units;
-    doc["maxCurrent"] = cfg.max_current_amps;
-    doc["currentRamp"] = cfg.current_ramp_amps_s;
+namespace {
 
-    uint16_t maxV_raw = cfg.max_battery_x100v_u16l | (cfg.max_battery_x100v_u16h << 8);
+// Fields shared, with identical names, by the v5 and v6 config layouts.
+template <typename T>
+void serializeCommonConfig(const T& c, JsonDocument& doc) {
+    doc["freedomUnits"] = c.use_freedom_units;
+    doc["maxCurrent"] = c.max_current_amps;
+    doc["currentRamp"] = c.current_ramp_amps_s;
+
+    uint16_t maxV_raw = c.max_battery_x100v_u16l | (c.max_battery_x100v_u16h << 8);
     doc["maxBatteryVolts"] = maxV_raw / 100.0f;
-    doc["lowCutoffVolts"] = cfg.low_cut_off_v;
-    doc["maxSpeed"] = cfg.max_speed_kph;
+    doc["lowCutoffVolts"] = c.low_cut_off_v;
+    doc["maxSpeed"] = c.max_speed_kph;
 
-    doc["useSpeedSensor"] = cfg.use_speed_sensor != 0;
-    doc["useShiftSensor"] = cfg.use_shift_sensor != 0;
-    doc["usePushWalk"] = cfg.use_push_walk != 0;
-    doc["temperatureSensor"] = cfg.use_temperature_sensor;
-    doc["lightsMode"] = cfg.lights_mode;
-    doc["usePretension"] = cfg.use_pretension != 0;
-    doc["pretensionSpeedCutoff"] = cfg.pretension_speed_cutoff_kph;
+    doc["useSpeedSensor"] = c.use_speed_sensor != 0;
+    doc["useShiftSensor"] = c.use_shift_sensor != 0;
+    doc["usePushWalk"] = c.use_push_walk != 0;
+    doc["temperatureSensor"] = c.use_temperature_sensor;
+    doc["lightsMode"] = c.lights_mode;
+    doc["usePretension"] = c.use_pretension != 0;
+    doc["pretensionSpeedCutoff"] = c.pretension_speed_cutoff_kph;
 
-    uint16_t wheel_raw = cfg.wheel_size_inch_x10_u16l | (cfg.wheel_size_inch_x10_u16h << 8);
+    uint16_t wheel_raw = c.wheel_size_inch_x10_u16l | (c.wheel_size_inch_x10_u16h << 8);
     doc["wheelSizeInch"] = wheel_raw / 10.0f;
-    doc["speedSensorSignals"] = cfg.speed_sensor_signals;
+    doc["speedSensorSignals"] = c.speed_sensor_signals;
 
-    doc["pasStartDelay"] = cfg.pas_start_delay_pulses;
-    doc["pasStopDelayMs"] = cfg.pas_stop_delay_x100s * 10;
-    doc["pasKeepCurrentPercent"] = cfg.pas_keep_current_percent;
-    doc["pasKeepCurrentCadenceRpm"] = cfg.pas_keep_current_cadence_rpm;
+    doc["pasStartDelay"] = c.pas_start_delay_pulses;
+    doc["pasStopDelayMs"] = c.pas_stop_delay_x100s * 10;
 
-    uint16_t thStart = cfg.throttle_start_voltage_mv_u16l | (cfg.throttle_start_voltage_mv_u16h << 8);
-    uint16_t thEnd = cfg.throttle_end_voltage_mv_u16l | (cfg.throttle_end_voltage_mv_u16h << 8);
+    uint16_t thStart = c.throttle_start_voltage_mv_u16l | (c.throttle_start_voltage_mv_u16h << 8);
+    uint16_t thEnd = c.throttle_end_voltage_mv_u16l | (c.throttle_end_voltage_mv_u16h << 8);
     doc["throttleStartMv"] = thStart;
     doc["throttleEndMv"] = thEnd;
-    doc["throttleStartPercent"] = cfg.throttle_start_percent;
-    doc["throttleGlobalSpdLimOpt"] = cfg.throttle_global_spd_lim_opt;
-    doc["throttleGlobalSpdLimPercent"] = cfg.throttle_global_spd_lim_percent;
+    doc["throttleStartPercent"] = c.throttle_start_percent;
+    doc["throttleGlobalSpdLimOpt"] = c.throttle_global_spd_lim_opt;
+    doc["throttleGlobalSpdLimPercent"] = c.throttle_global_spd_lim_percent;
 
-    uint16_t shiftDur = cfg.shift_interrupt_duration_ms_u16l | (cfg.shift_interrupt_duration_ms_u16h << 8);
+    uint16_t shiftDur = c.shift_interrupt_duration_ms_u16l | (c.shift_interrupt_duration_ms_u16h << 8);
     doc["shiftInterruptDurationMs"] = shiftDur;
-    doc["shiftInterruptCurrentThreshold"] = cfg.shift_interrupt_current_threshold_percent;
+    doc["shiftInterruptCurrentThreshold"] = c.shift_interrupt_current_threshold_percent;
 
-    doc["walkModeDisplay"] = cfg.walk_mode_data_display;
-    doc["assistModeSelect"] = cfg.assist_mode_select;
-    doc["assistStartupLevel"] = cfg.assist_startup_level;
+    doc["walkModeDisplay"] = c.walk_mode_data_display;
+    doc["assistModeSelect"] = c.assist_mode_select;
+    doc["assistStartupLevel"] = c.assist_startup_level;
+}
 
-    // Standard levels array
-    JsonArray stdArr = doc["standardLevels"].to<JsonArray>();
-    for (int i = 0; i < 10; ++i) {
-        JsonObject lvl = stdArr.add<JsonObject>();
-        lvl["flags"] = cfg.standard_levels[i].flags;
-        lvl["pas"] = (cfg.standard_levels[i].flags & ASSIST_FLAG_PAS) != 0;
-        lvl["throttle"] = (cfg.standard_levels[i].flags & ASSIST_FLAG_THROTTLE) != 0;
-        lvl["cruise"] = (cfg.standard_levels[i].flags & ASSIST_FLAG_CRUISE) != 0;
-        lvl["overrideCadence"] = (cfg.standard_levels[i].flags & ASSIST_FLAG_OVERRIDE_CADENCE) != 0;
-        lvl["overrideSpeed"] = (cfg.standard_levels[i].flags & ASSIST_FLAG_OVERRIDE_SPEED) != 0;
-        lvl["pasVariable"] = (cfg.standard_levels[i].flags & ASSIST_FLAG_PAS_VARIABLE) != 0;
-        lvl["pasTorque"] = (cfg.standard_levels[i].flags & ASSIST_FLAG_PAS_TORQUE) != 0;
-        lvl["current"] = cfg.standard_levels[i].target_current_percent;
-        lvl["maxThrottle"] = cfg.standard_levels[i].max_throttle_current_percent;
-        lvl["cadence"] = cfg.standard_levels[i].max_cadence_percent;
-        lvl["speed"] = cfg.standard_levels[i].max_speed_percent;
-        lvl["torqueAmp"] = cfg.standard_levels[i].torque_amplification_factor_x10 / 10.0f;
+template <typename T>
+void deserializeCommonConfig(const JsonDocument& doc, T& c) {
+    if (doc["maxCurrent"].is<uint8_t>()) c.max_current_amps = doc["maxCurrent"];
+    if (doc["currentRamp"].is<uint8_t>()) c.current_ramp_amps_s = doc["currentRamp"];
+    if (doc["freedomUnits"].is<uint8_t>()) c.use_freedom_units = doc["freedomUnits"];
+
+    if (doc["maxBatteryVolts"].is<float>()) {
+        uint16_t maxV = (uint16_t)(doc["maxBatteryVolts"].as<float>() * 100.0f);
+        c.max_battery_x100v_u16l = (uint8_t)(maxV & 0xFF);
+        c.max_battery_x100v_u16h = (uint8_t)(maxV >> 8);
+    }
+    if (doc["lowCutoffVolts"].is<uint8_t>()) c.low_cut_off_v = doc["lowCutoffVolts"];
+    if (doc["maxSpeed"].is<uint8_t>()) c.max_speed_kph = doc["maxSpeed"];
+
+    if (doc["useSpeedSensor"].is<bool>()) c.use_speed_sensor = doc["useSpeedSensor"] ? 1 : 0;
+    if (doc["useShiftSensor"].is<bool>()) c.use_shift_sensor = doc["useShiftSensor"] ? 1 : 0;
+    if (doc["usePushWalk"].is<bool>()) c.use_push_walk = doc["usePushWalk"] ? 1 : 0;
+    if (doc["temperatureSensor"].is<uint8_t>()) c.use_temperature_sensor = doc["temperatureSensor"];
+    if (doc["lightsMode"].is<uint8_t>()) c.lights_mode = doc["lightsMode"];
+    if (doc["usePretension"].is<bool>()) c.use_pretension = doc["usePretension"] ? 1 : 0;
+    if (doc["pretensionSpeedCutoff"].is<uint8_t>()) c.pretension_speed_cutoff_kph = doc["pretensionSpeedCutoff"];
+
+    if (doc["wheelSizeInch"].is<float>()) {
+        uint16_t wheel = (uint16_t)(doc["wheelSizeInch"].as<float>() * 10.0f);
+        c.wheel_size_inch_x10_u16l = (uint8_t)(wheel & 0xFF);
+        c.wheel_size_inch_x10_u16h = (uint8_t)(wheel >> 8);
+    }
+    if (doc["speedSensorSignals"].is<uint8_t>()) c.speed_sensor_signals = doc["speedSensorSignals"];
+
+    if (doc["pasStartDelay"].is<uint8_t>()) c.pas_start_delay_pulses = doc["pasStartDelay"];
+    if (doc["pasStopDelayMs"].is<uint32_t>()) {
+        uint32_t ms = doc["pasStopDelayMs"];
+        c.pas_stop_delay_x100s = (uint8_t)(ms / 10);
     }
 
-    // Sport levels array
+    if (doc["throttleStartMv"].is<uint16_t>()) {
+        uint16_t thStart = doc["throttleStartMv"];
+        c.throttle_start_voltage_mv_u16l = (uint8_t)(thStart & 0xFF);
+        c.throttle_start_voltage_mv_u16h = (uint8_t)(thStart >> 8);
+    }
+    if (doc["throttleEndMv"].is<uint16_t>()) {
+        uint16_t thEnd = doc["throttleEndMv"];
+        c.throttle_end_voltage_mv_u16l = (uint8_t)(thEnd & 0xFF);
+        c.throttle_end_voltage_mv_u16h = (uint8_t)(thEnd >> 8);
+    }
+    if (doc["throttleStartPercent"].is<uint8_t>()) c.throttle_start_percent = doc["throttleStartPercent"];
+    if (doc["throttleGlobalSpdLimOpt"].is<uint8_t>()) c.throttle_global_spd_lim_opt = doc["throttleGlobalSpdLimOpt"];
+    if (doc["throttleGlobalSpdLimPercent"].is<uint8_t>()) c.throttle_global_spd_lim_percent = doc["throttleGlobalSpdLimPercent"];
+
+    if (doc["shiftInterruptDurationMs"].is<uint16_t>()) {
+        uint16_t shiftDur = doc["shiftInterruptDurationMs"];
+        c.shift_interrupt_duration_ms_u16l = (uint8_t)(shiftDur & 0xFF);
+        c.shift_interrupt_duration_ms_u16h = (uint8_t)(shiftDur >> 8);
+    }
+    if (doc["shiftInterruptCurrentThreshold"].is<uint8_t>()) {
+        c.shift_interrupt_current_threshold_percent = doc["shiftInterruptCurrentThreshold"];
+    }
+
+    if (doc["walkModeDisplay"].is<uint8_t>()) c.walk_mode_data_display = doc["walkModeDisplay"];
+    if (doc["assistModeSelect"].is<uint8_t>()) c.assist_mode_select = doc["assistModeSelect"];
+    if (doc["assistStartupLevel"].is<uint8_t>()) c.assist_startup_level = doc["assistStartupLevel"];
+}
+
+// Serialize the boolean view of an assist-level flags byte (common to v5/v6).
+void serializeLevelFlags(uint8_t flags, JsonObject lvl) {
+    lvl["flags"] = flags;
+    lvl["pas"] = (flags & ASSIST_FLAG_PAS) != 0;
+    lvl["throttle"] = (flags & ASSIST_FLAG_THROTTLE) != 0;
+    lvl["cruise"] = (flags & ASSIST_FLAG_CRUISE) != 0;
+    lvl["overrideCadence"] = (flags & ASSIST_FLAG_OVERRIDE_CADENCE) != 0;
+    lvl["overrideSpeed"] = (flags & ASSIST_FLAG_OVERRIDE_SPEED) != 0;
+    lvl["pasVariable"] = (flags & ASSIST_FLAG_PAS_VARIABLE) != 0;
+    lvl["pasTorque"] = (flags & ASSIST_FLAG_PAS_TORQUE) != 0;
+}
+
+// Rebuild a flags byte from the boolean view; an explicit `flags` field wins.
+uint8_t deserializeLevelFlags(const JsonObjectConst& lvl) {
+    uint8_t flags = 0;
+    if (lvl["pas"].is<bool>() && lvl["pas"]) flags |= ASSIST_FLAG_PAS;
+    if (lvl["throttle"].is<bool>() && lvl["throttle"]) flags |= ASSIST_FLAG_THROTTLE;
+    if (lvl["cruise"].is<bool>() && lvl["cruise"]) flags |= ASSIST_FLAG_CRUISE;
+    if (lvl["overrideCadence"].is<bool>() && lvl["overrideCadence"]) flags |= ASSIST_FLAG_OVERRIDE_CADENCE;
+    if (lvl["overrideSpeed"].is<bool>() && lvl["overrideSpeed"]) flags |= ASSIST_FLAG_OVERRIDE_SPEED;
+    if (lvl["pasVariable"].is<bool>() && lvl["pasVariable"]) flags |= ASSIST_FLAG_PAS_VARIABLE;
+    if (lvl["pasTorque"].is<bool>() && lvl["pasTorque"]) flags |= ASSIST_FLAG_PAS_TORQUE;
+    if (lvl["flags"].is<uint8_t>()) flags = lvl["flags"];
+    return flags;
+}
+
+}  // namespace
+
+bool serializeConfigToJson(const BbsFwConfig& cfg, JsonDocument& doc) {
+    doc["configVersion"] = cfg.version;
+
+    JsonArray stdArr = doc["standardLevels"].to<JsonArray>();
     JsonArray sportArr = doc["sportLevels"].to<JsonArray>();
-    for (int i = 0; i < 10; ++i) {
-        JsonObject lvl = sportArr.add<JsonObject>();
-        lvl["flags"] = cfg.sport_levels[i].flags;
-        lvl["pas"] = (cfg.sport_levels[i].flags & ASSIST_FLAG_PAS) != 0;
-        lvl["throttle"] = (cfg.sport_levels[i].flags & ASSIST_FLAG_THROTTLE) != 0;
-        lvl["cruise"] = (cfg.sport_levels[i].flags & ASSIST_FLAG_CRUISE) != 0;
-        lvl["overrideCadence"] = (cfg.sport_levels[i].flags & ASSIST_FLAG_OVERRIDE_CADENCE) != 0;
-        lvl["overrideSpeed"] = (cfg.sport_levels[i].flags & ASSIST_FLAG_OVERRIDE_SPEED) != 0;
-        lvl["pasVariable"] = (cfg.sport_levels[i].flags & ASSIST_FLAG_PAS_VARIABLE) != 0;
-        lvl["pasTorque"] = (cfg.sport_levels[i].flags & ASSIST_FLAG_PAS_TORQUE) != 0;
-        lvl["current"] = cfg.sport_levels[i].target_current_percent;
-        lvl["maxThrottle"] = cfg.sport_levels[i].max_throttle_current_percent;
-        lvl["cadence"] = cfg.sport_levels[i].max_cadence_percent;
-        lvl["speed"] = cfg.sport_levels[i].max_speed_percent;
-        lvl["torqueAmp"] = cfg.sport_levels[i].torque_amplification_factor_x10 / 10.0f;
+
+    if (cfg.isV6()) {
+        const BbsFwConfigV6& c = cfg.v6;
+        serializeCommonConfig(c, doc);
+
+        for (int i = 0; i < 10; ++i) {
+            const AssistLevelV6& l = c.standard_levels[i];
+            JsonObject lvl = stdArr.add<JsonObject>();
+            serializeLevelFlags(l.flags, lvl);
+            lvl["displayTargetCurrent"] = (l.flags & ASSIST_FLAG_DISPLAY_TARGET_CURRENT) != 0;
+            lvl["maxCurrent"] = l.max_current_percent;
+            lvl["minCurrent"] = l.min_current_percent;
+            lvl["taperStartCadence"] = l.taper_start_cadence_rpm;
+            lvl["taperEndCadence"] = l.taper_end_cadence_rpm;
+            lvl["maxThrottle"] = l.max_throttle_current_percent;
+            lvl["speed"] = l.max_speed_percent;
+            lvl["torqueAmp"] = l.torque_amplification_factor_x10 / 10.0f;
+        }
+        for (int i = 0; i < 10; ++i) {
+            const AssistLevelV6& l = c.sport_levels[i];
+            JsonObject lvl = sportArr.add<JsonObject>();
+            serializeLevelFlags(l.flags, lvl);
+            lvl["displayTargetCurrent"] = (l.flags & ASSIST_FLAG_DISPLAY_TARGET_CURRENT) != 0;
+            lvl["maxCurrent"] = l.max_current_percent;
+            lvl["minCurrent"] = l.min_current_percent;
+            lvl["taperStartCadence"] = l.taper_start_cadence_rpm;
+            lvl["taperEndCadence"] = l.taper_end_cadence_rpm;
+            lvl["maxThrottle"] = l.max_throttle_current_percent;
+            lvl["speed"] = l.max_speed_percent;
+            lvl["torqueAmp"] = l.torque_amplification_factor_x10 / 10.0f;
+        }
+    } else {
+        const BbsFwConfigV5& c = cfg.v5;
+        serializeCommonConfig(c, doc);
+        doc["pasKeepCurrentPercent"] = c.pas_keep_current_percent;
+        doc["pasKeepCurrentCadenceRpm"] = c.pas_keep_current_cadence_rpm;
+
+        for (int i = 0; i < 10; ++i) {
+            const AssistLevel& l = c.standard_levels[i];
+            JsonObject lvl = stdArr.add<JsonObject>();
+            serializeLevelFlags(l.flags, lvl);
+            lvl["current"] = l.target_current_percent;
+            lvl["maxThrottle"] = l.max_throttle_current_percent;
+            lvl["cadence"] = l.max_cadence_percent;
+            lvl["speed"] = l.max_speed_percent;
+            lvl["torqueAmp"] = l.torque_amplification_factor_x10 / 10.0f;
+        }
+        for (int i = 0; i < 10; ++i) {
+            const AssistLevel& l = c.sport_levels[i];
+            JsonObject lvl = sportArr.add<JsonObject>();
+            serializeLevelFlags(l.flags, lvl);
+            lvl["current"] = l.target_current_percent;
+            lvl["maxThrottle"] = l.max_throttle_current_percent;
+            lvl["cadence"] = l.max_cadence_percent;
+            lvl["speed"] = l.max_speed_percent;
+            lvl["torqueAmp"] = l.torque_amplification_factor_x10 / 10.0f;
+        }
     }
 
     return true;
 }
 
-bool deserializeConfigFromJson(const JsonDocument& doc, BbsFwConfigV5& cfg) {
-    // Zero the struct first so fields absent from the JSON (e.g. pretension on a
-    // version-5 write) are deterministic instead of uninitialized stack garbage.
-    memset(&cfg, 0, sizeof(BbsFwConfigV5));
+bool deserializeConfigFromJson(const JsonDocument& doc, BbsFwConfig& cfg) {
+    if (cfg.isV6()) {
+        BbsFwConfigV6& c = cfg.v6;
+        // Zero first so fields absent from the JSON are deterministic rather than
+        // uninitialized stack garbage.
+        memset(&c, 0, sizeof(c));
+        deserializeCommonConfig(doc, c);
 
-    if (doc["maxCurrent"].is<uint8_t>()) {
-        cfg.max_current_amps = doc["maxCurrent"];
-    }
-    if (doc["currentRamp"].is<uint8_t>()) {
-        cfg.current_ramp_amps_s = doc["currentRamp"];
-    }
-    if (doc["freedomUnits"].is<uint8_t>()) {
-        cfg.use_freedom_units = doc["freedomUnits"];
-    }
+        if (doc["standardLevels"].is<JsonArrayConst>()) {
+            JsonArrayConst arr = doc["standardLevels"].as<JsonArrayConst>();
+            for (size_t i = 0; i < arr.size() && i < 10; ++i) {
+                JsonObjectConst lvl = arr[i];
+                uint8_t flags = deserializeLevelFlags(lvl);
+                if (lvl["displayTargetCurrent"].is<bool>() && lvl["displayTargetCurrent"]) {
+                    flags |= ASSIST_FLAG_DISPLAY_TARGET_CURRENT;
+                }
+                AssistLevelV6& l = c.standard_levels[i];
+                l.flags = flags;
+                if (lvl["maxCurrent"].is<uint8_t>()) l.max_current_percent = lvl["maxCurrent"];
+                if (lvl["minCurrent"].is<uint8_t>()) l.min_current_percent = lvl["minCurrent"];
+                if (lvl["taperStartCadence"].is<uint8_t>()) l.taper_start_cadence_rpm = lvl["taperStartCadence"];
+                if (lvl["taperEndCadence"].is<uint8_t>()) l.taper_end_cadence_rpm = lvl["taperEndCadence"];
+                if (lvl["maxThrottle"].is<uint8_t>()) l.max_throttle_current_percent = lvl["maxThrottle"];
+                if (lvl["speed"].is<uint8_t>()) l.max_speed_percent = lvl["speed"];
+                if (lvl["torqueAmp"].is<float>()) {
+                    l.torque_amplification_factor_x10 = (uint8_t)(lvl["torqueAmp"].as<float>() * 10.0f);
+                }
+            }
+        }
 
-    if (doc["maxBatteryVolts"].is<float>()) {
-        uint16_t maxV = (uint16_t)(doc["maxBatteryVolts"].as<float>() * 100.0f);
-        cfg.max_battery_x100v_u16l = (uint8_t)(maxV & 0xFF);
-        cfg.max_battery_x100v_u16h = (uint8_t)(maxV >> 8);
-    }
-    if (doc["lowCutoffVolts"].is<uint8_t>()) {
-        cfg.low_cut_off_v = doc["lowCutoffVolts"];
-    }
-    if (doc["maxSpeed"].is<uint8_t>()) {
-        cfg.max_speed_kph = doc["maxSpeed"];
-    }
-
-    if (doc["useSpeedSensor"].is<bool>()) cfg.use_speed_sensor = doc["useSpeedSensor"] ? 1 : 0;
-    if (doc["useShiftSensor"].is<bool>()) cfg.use_shift_sensor = doc["useShiftSensor"] ? 1 : 0;
-    if (doc["usePushWalk"].is<bool>()) cfg.use_push_walk = doc["usePushWalk"] ? 1 : 0;
-    if (doc["temperatureSensor"].is<uint8_t>()) cfg.use_temperature_sensor = doc["temperatureSensor"];
-    if (doc["lightsMode"].is<uint8_t>()) cfg.lights_mode = doc["lightsMode"];
-    if (doc["usePretension"].is<bool>()) cfg.use_pretension = doc["usePretension"] ? 1 : 0;
-    if (doc["pretensionSpeedCutoff"].is<uint8_t>()) cfg.pretension_speed_cutoff_kph = doc["pretensionSpeedCutoff"];
-
-    if (doc["wheelSizeInch"].is<float>()) {
-        uint16_t wheel = (uint16_t)(doc["wheelSizeInch"].as<float>() * 10.0f);
-        cfg.wheel_size_inch_x10_u16l = (uint8_t)(wheel & 0xFF);
-        cfg.wheel_size_inch_x10_u16h = (uint8_t)(wheel >> 8);
-    }
-    if (doc["speedSensorSignals"].is<uint8_t>()) cfg.speed_sensor_signals = doc["speedSensorSignals"];
-
-    if (doc["pasStartDelay"].is<uint8_t>()) cfg.pas_start_delay_pulses = doc["pasStartDelay"];
-    if (doc["pasStopDelayMs"].is<uint32_t>()) {
-        uint32_t ms = doc["pasStopDelayMs"];
-        cfg.pas_stop_delay_x100s = (uint8_t)(ms / 10);
-    }
-    if (doc["pasKeepCurrentPercent"].is<uint8_t>()) cfg.pas_keep_current_percent = doc["pasKeepCurrentPercent"];
-    if (doc["pasKeepCurrentCadenceRpm"].is<uint8_t>()) cfg.pas_keep_current_cadence_rpm = doc["pasKeepCurrentCadenceRpm"];
-
-    if (doc["throttleStartMv"].is<uint16_t>()) {
-        uint16_t thStart = doc["throttleStartMv"];
-        cfg.throttle_start_voltage_mv_u16l = (uint8_t)(thStart & 0xFF);
-        cfg.throttle_start_voltage_mv_u16h = (uint8_t)(thStart >> 8);
-    }
-    if (doc["throttleEndMv"].is<uint16_t>()) {
-        uint16_t thEnd = doc["throttleEndMv"];
-        cfg.throttle_end_voltage_mv_u16l = (uint8_t)(thEnd & 0xFF);
-        cfg.throttle_end_voltage_mv_u16h = (uint8_t)(thEnd >> 8);
-    }
-    if (doc["throttleStartPercent"].is<uint8_t>()) cfg.throttle_start_percent = doc["throttleStartPercent"];
-    if (doc["throttleGlobalSpdLimOpt"].is<uint8_t>()) cfg.throttle_global_spd_lim_opt = doc["throttleGlobalSpdLimOpt"];
-    if (doc["throttleGlobalSpdLimPercent"].is<uint8_t>()) cfg.throttle_global_spd_lim_percent = doc["throttleGlobalSpdLimPercent"];
-
-    if (doc["shiftInterruptDurationMs"].is<uint16_t>()) {
-        uint16_t shiftDur = doc["shiftInterruptDurationMs"];
-        cfg.shift_interrupt_duration_ms_u16l = (uint8_t)(shiftDur & 0xFF);
-        cfg.shift_interrupt_duration_ms_u16h = (uint8_t)(shiftDur >> 8);
-    }
-    if (doc["shiftInterruptCurrentThreshold"].is<uint8_t>()) {
-        cfg.shift_interrupt_current_threshold_percent = doc["shiftInterruptCurrentThreshold"];
+        if (doc["sportLevels"].is<JsonArrayConst>()) {
+            JsonArrayConst arr = doc["sportLevels"].as<JsonArrayConst>();
+            for (size_t i = 0; i < arr.size() && i < 10; ++i) {
+                JsonObjectConst lvl = arr[i];
+                uint8_t flags = deserializeLevelFlags(lvl);
+                if (lvl["displayTargetCurrent"].is<bool>() && lvl["displayTargetCurrent"]) {
+                    flags |= ASSIST_FLAG_DISPLAY_TARGET_CURRENT;
+                }
+                AssistLevelV6& l = c.sport_levels[i];
+                l.flags = flags;
+                if (lvl["maxCurrent"].is<uint8_t>()) l.max_current_percent = lvl["maxCurrent"];
+                if (lvl["minCurrent"].is<uint8_t>()) l.min_current_percent = lvl["minCurrent"];
+                if (lvl["taperStartCadence"].is<uint8_t>()) l.taper_start_cadence_rpm = lvl["taperStartCadence"];
+                if (lvl["taperEndCadence"].is<uint8_t>()) l.taper_end_cadence_rpm = lvl["taperEndCadence"];
+                if (lvl["maxThrottle"].is<uint8_t>()) l.max_throttle_current_percent = lvl["maxThrottle"];
+                if (lvl["speed"].is<uint8_t>()) l.max_speed_percent = lvl["speed"];
+                if (lvl["torqueAmp"].is<float>()) {
+                    l.torque_amplification_factor_x10 = (uint8_t)(lvl["torqueAmp"].as<float>() * 10.0f);
+                }
+            }
+        }
+        return true;
     }
 
-    if (doc["walkModeDisplay"].is<uint8_t>()) cfg.walk_mode_data_display = doc["walkModeDisplay"];
-    if (doc["assistModeSelect"].is<uint8_t>()) cfg.assist_mode_select = doc["assistModeSelect"];
-    if (doc["assistStartupLevel"].is<uint8_t>()) cfg.assist_startup_level = doc["assistStartupLevel"];
+    BbsFwConfigV5& c = cfg.v5;
+    memset(&c, 0, sizeof(c));
+    deserializeCommonConfig(doc, c);
 
-    // Standard levels
+    if (doc["pasKeepCurrentPercent"].is<uint8_t>()) c.pas_keep_current_percent = doc["pasKeepCurrentPercent"];
+    if (doc["pasKeepCurrentCadenceRpm"].is<uint8_t>()) c.pas_keep_current_cadence_rpm = doc["pasKeepCurrentCadenceRpm"];
+
     if (doc["standardLevels"].is<JsonArrayConst>()) {
         JsonArrayConst arr = doc["standardLevels"].as<JsonArrayConst>();
         for (size_t i = 0; i < arr.size() && i < 10; ++i) {
             JsonObjectConst lvl = arr[i];
-            uint8_t flags = 0;
-            if (lvl["pas"].is<bool>() && lvl["pas"]) flags |= ASSIST_FLAG_PAS;
-            if (lvl["throttle"].is<bool>() && lvl["throttle"]) flags |= ASSIST_FLAG_THROTTLE;
-            if (lvl["cruise"].is<bool>() && lvl["cruise"]) flags |= ASSIST_FLAG_CRUISE;
-            if (lvl["overrideCadence"].is<bool>() && lvl["overrideCadence"]) flags |= ASSIST_FLAG_OVERRIDE_CADENCE;
-            if (lvl["overrideSpeed"].is<bool>() && lvl["overrideSpeed"]) flags |= ASSIST_FLAG_OVERRIDE_SPEED;
-            if (lvl["pasVariable"].is<bool>() && lvl["pasVariable"]) flags |= ASSIST_FLAG_PAS_VARIABLE;
-            if (lvl["pasTorque"].is<bool>() && lvl["pasTorque"]) flags |= ASSIST_FLAG_PAS_TORQUE;
-            if (lvl["flags"].is<uint8_t>()) flags = lvl["flags"];
-
-            cfg.standard_levels[i].flags = flags;
-            if (lvl["current"].is<uint8_t>()) cfg.standard_levels[i].target_current_percent = lvl["current"];
-            if (lvl["maxThrottle"].is<uint8_t>()) cfg.standard_levels[i].max_throttle_current_percent = lvl["maxThrottle"];
-            if (lvl["cadence"].is<uint8_t>()) cfg.standard_levels[i].max_cadence_percent = lvl["cadence"];
-            if (lvl["speed"].is<uint8_t>()) cfg.standard_levels[i].max_speed_percent = lvl["speed"];
+            AssistLevel& l = c.standard_levels[i];
+            l.flags = deserializeLevelFlags(lvl);
+            if (lvl["current"].is<uint8_t>()) l.target_current_percent = lvl["current"];
+            if (lvl["maxThrottle"].is<uint8_t>()) l.max_throttle_current_percent = lvl["maxThrottle"];
+            if (lvl["cadence"].is<uint8_t>()) l.max_cadence_percent = lvl["cadence"];
+            if (lvl["speed"].is<uint8_t>()) l.max_speed_percent = lvl["speed"];
             if (lvl["torqueAmp"].is<float>()) {
-                cfg.standard_levels[i].torque_amplification_factor_x10 = (uint8_t)(lvl["torqueAmp"].as<float>() * 10.0f);
+                l.torque_amplification_factor_x10 = (uint8_t)(lvl["torqueAmp"].as<float>() * 10.0f);
             }
         }
     }
 
-    // Sport levels
     if (doc["sportLevels"].is<JsonArrayConst>()) {
         JsonArrayConst arr = doc["sportLevels"].as<JsonArrayConst>();
         for (size_t i = 0; i < arr.size() && i < 10; ++i) {
             JsonObjectConst lvl = arr[i];
-            uint8_t flags = 0;
-            if (lvl["pas"].is<bool>() && lvl["pas"]) flags |= ASSIST_FLAG_PAS;
-            if (lvl["throttle"].is<bool>() && lvl["throttle"]) flags |= ASSIST_FLAG_THROTTLE;
-            if (lvl["cruise"].is<bool>() && lvl["cruise"]) flags |= ASSIST_FLAG_CRUISE;
-            if (lvl["overrideCadence"].is<bool>() && lvl["overrideCadence"]) flags |= ASSIST_FLAG_OVERRIDE_CADENCE;
-            if (lvl["overrideSpeed"].is<bool>() && lvl["overrideSpeed"]) flags |= ASSIST_FLAG_OVERRIDE_SPEED;
-            if (lvl["pasVariable"].is<bool>() && lvl["pasVariable"]) flags |= ASSIST_FLAG_PAS_VARIABLE;
-            if (lvl["pasTorque"].is<bool>() && lvl["pasTorque"]) flags |= ASSIST_FLAG_PAS_TORQUE;
-            if (lvl["flags"].is<uint8_t>()) flags = lvl["flags"];
-
-            cfg.sport_levels[i].flags = flags;
-            if (lvl["current"].is<uint8_t>()) cfg.sport_levels[i].target_current_percent = lvl["current"];
-            if (lvl["maxThrottle"].is<uint8_t>()) cfg.sport_levels[i].max_throttle_current_percent = lvl["maxThrottle"];
-            if (lvl["cadence"].is<uint8_t>()) cfg.sport_levels[i].max_cadence_percent = lvl["cadence"];
-            if (lvl["speed"].is<uint8_t>()) cfg.sport_levels[i].max_speed_percent = lvl["speed"];
+            AssistLevel& l = c.sport_levels[i];
+            l.flags = deserializeLevelFlags(lvl);
+            if (lvl["current"].is<uint8_t>()) l.target_current_percent = lvl["current"];
+            if (lvl["maxThrottle"].is<uint8_t>()) l.max_throttle_current_percent = lvl["maxThrottle"];
+            if (lvl["cadence"].is<uint8_t>()) l.max_cadence_percent = lvl["cadence"];
+            if (lvl["speed"].is<uint8_t>()) l.max_speed_percent = lvl["speed"];
             if (lvl["torqueAmp"].is<float>()) {
-                cfg.sport_levels[i].torque_amplification_factor_x10 = (uint8_t)(lvl["torqueAmp"].as<float>() * 10.0f);
+                l.torque_amplification_factor_x10 = (uint8_t)(lvl["torqueAmp"].as<float>() * 10.0f);
             }
         }
     }
