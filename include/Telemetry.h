@@ -34,7 +34,7 @@ public:
     void updateLights(bool on);
     void updateStatusCode(uint8_t code);
     void updateTemperature(int8_t controllerC, int8_t motorC);
-    void updateTargetTelemetry(uint8_t targetCurrentPercent, uint8_t targetSpeedPercent, uint16_t cadenceRpmX10);
+    void updateTargetTelemetry(uint8_t targetCurrentPercent, uint8_t targetSpeedPercent, uint16_t cadenceRpmX10, uint16_t motorRpmX10);
     void updateFirmwareInfo(uint8_t major, uint8_t minor, uint8_t patch, uint8_t cfgVer, ControllerType type);
 
     // Activity tracking
@@ -90,6 +90,7 @@ private:
     uint8_t _targetCurrentPercent;
     uint8_t _targetSpeedPercent;
     uint16_t _cadenceRpmX10;
+    uint16_t _motorRpmX10;
 
     // Controller details
     uint8_t _fwMajor;

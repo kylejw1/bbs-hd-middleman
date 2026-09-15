@@ -45,9 +45,9 @@ constexpr uint8_t OPCODE_DISPLAY_WRITE_SPEED_LIM= 0x1f;
 constexpr uint8_t EVENT_LOG_ENTRY               = 0xee;
 constexpr uint8_t EVENT_LOG_DATA_ENTRY          = 0xed;
 // Multi-value debug telemetry (bbs-fw 0xEC): header, target current %,
-// target speed %, cadence rpm x10 (hi/lo), checksum.
+// target speed %, cadence rpm x10 (hi/lo), motor rpm x10 (hi/lo), checksum.
 constexpr uint8_t EVENT_LOG_TELEMETRY_ENTRY     = 0xec;
-constexpr size_t  EVENT_LOG_TELEMETRY_SIZE      = 6;
+constexpr size_t  EVENT_LOG_TELEMETRY_SIZE      = 8;
 
 // Assist Flags
 constexpr uint8_t ASSIST_FLAG_PAS               = 0x01;

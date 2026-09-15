@@ -22,6 +22,7 @@ TelemetryTracker::TelemetryTracker()
     , _targetCurrentPercent(0)
     , _targetSpeedPercent(0)
     , _cadenceRpmX10(0)
+    , _motorRpmX10(0)
     , _fwMajor(0)
     , _fwMinor(0)
     , _fwPatch(0)
@@ -120,11 +121,12 @@ void TelemetryTracker::updateTemperature(int8_t controllerC, int8_t motorC) {
     }
 }
 
-void TelemetryTracker::updateTargetTelemetry(uint8_t targetCurrentPercent, uint8_t targetSpeedPercent, uint16_t cadenceRpmX10) {
+void TelemetryTracker::updateTargetTelemetry(uint8_t targetCurrentPercent, uint8_t targetSpeedPercent, uint16_t cadenceRpmX10, uint16_t motorRpmX10) {
     if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         _targetCurrentPercent = targetCurrentPercent;
         _targetSpeedPercent = targetSpeedPercent;
         _cadenceRpmX10 = cadenceRpmX10;
+        _motorRpmX10 = motorRpmX10;
         _hasTargetTelemetry = true;
         xSemaphoreGive(_mutex);
     }
@@ -254,6 +256,7 @@ void TelemetryTracker::buildTelemetryJson(JsonDocument& doc) {
         doc["targetCurrentPercent"] = _targetCurrentPercent;
         doc["targetSpeedPercent"] = _targetSpeedPercent;
         doc["cadenceRpm"] = serialized(String(_cadenceRpmX10 / 10.0f, 1));
+        doc["motorRpm"] = serialized(String(_motorRpmX10 / 10.0f, 1));
 
         doc["displayConnected"] = isDisplayActive();
         doc["controllerConnected"] = isControllerActive();

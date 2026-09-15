@@ -185,16 +185,19 @@ void SerialBridge::processControllerRxPassThrough() {
         }
 
         // Multi-value debug telemetry frame (0xEC): target current %, target
-        // speed %, cadence rpm x10. Swallowed like the other event frames.
+        // speed %, cadence rpm x10, motor rpm x10. Swallowed like the other
+        // event frames.
         if (_controllerBufLen >= 1 && _controllerBuf[0] == EVENT_LOG_TELEMETRY_ENTRY) {
             if (_controllerBufLen >= EVENT_LOG_TELEMETRY_SIZE) {
                 if (verifyChecksum(_controllerBuf, EVENT_LOG_TELEMETRY_SIZE)) {
                     uint16_t cadenceX10 = (uint16_t)((_controllerBuf[3] << 8) | _controllerBuf[4]);
-                    Telemetry.updateTargetTelemetry(_controllerBuf[1], _controllerBuf[2], cadenceX10);
+                    uint16_t motorRpmX10 = (uint16_t)((_controllerBuf[5] << 8) | _controllerBuf[6]);
+                    Telemetry.updateTargetTelemetry(_controllerBuf[1], _controllerBuf[2], cadenceX10, motorRpmX10);
                     Telemetry.recordIntercept();
-                    Debug.tracef("Telemetry: target %d%%, speed %d%%, cadence %d.%d rpm",
+                    Debug.tracef("Telemetry: target %d%%, speed %d%%, cadence %d.%d rpm, motor %d.%d rpm",
                                  _controllerBuf[1], _controllerBuf[2],
-                                 cadenceX10 / 10, cadenceX10 % 10);
+                                 cadenceX10 / 10, cadenceX10 % 10,
+                                 motorRpmX10 / 10, motorRpmX10 % 10);
                 }
                 _controllerBufLen = 0;
                 continue;
@@ -462,7 +465,8 @@ void SerialBridge::flushQueuedDisplayWrites() {
 // into telemetry) rather than counted as the transaction response, otherwise a
 // write gets "checksum mismatch" and fails even though the controller accepted it.
 // Frame shapes: 0xEE <id> <chk> (3), 0xED <id> <hi> <lo> <chk> (5),
-// 0xEC <cur> <spd> <cad_hi> <cad_lo> <chk> (6). `firstByte` is already consumed.
+// 0xEC <cur> <spd> <cad_hi> <cad_lo> <mot_hi> <mot_lo> <chk> (8).
+// `firstByte` is already consumed.
 bool SerialBridge::consumeControllerEventFrame(uint8_t firstByte, uint32_t deadlineMs) {
     size_t evtSize;
     if (firstByte == EVENT_LOG_ENTRY) {
@@ -504,10 +508,12 @@ bool SerialBridge::consumeControllerEventFrame(uint8_t firstByte, uint32_t deadl
 
     if (firstByte == EVENT_LOG_TELEMETRY_ENTRY) {
         uint16_t cadenceX10 = (uint16_t)((frame[3] << 8) | frame[4]);
-        Telemetry.updateTargetTelemetry(frame[1], frame[2], cadenceX10);
+        uint16_t motorRpmX10 = (uint16_t)((frame[5] << 8) | frame[6]);
+        Telemetry.updateTargetTelemetry(frame[1], frame[2], cadenceX10, motorRpmX10);
         Telemetry.recordIntercept();
-        Debug.tracef("Telemetry during config: target %d%%, speed %d%%, cadence %d.%d rpm",
-                     frame[1], frame[2], cadenceX10 / 10, cadenceX10 % 10);
+        Debug.tracef("Telemetry during config: target %d%%, speed %d%%, cadence %d.%d rpm, motor %d.%d rpm",
+                     frame[1], frame[2], cadenceX10 / 10, cadenceX10 % 10,
+                     motorRpmX10 / 10, motorRpmX10 % 10);
         return true;
     }
 

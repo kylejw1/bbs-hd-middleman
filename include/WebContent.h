@@ -219,9 +219,13 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
             <span style="color:var(--text-muted)">Target Speed</span>
             <strong id="val-target-speed">--</strong>
           </div>
-          <div style="display:flex; justify-content:space-between;">
+          <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
             <span style="color:var(--text-muted)">Pedal Cadence</span>
             <strong id="val-cadence">--</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between;">
+            <span style="color:var(--text-muted)">Motor Speed</span>
+            <strong id="val-motor-rpm">--</strong>
           </div>
         </div>
       </div>
@@ -743,6 +747,7 @@ async function pollTelemetry() {
     document.getElementById('val-target-current').innerText = hasTargets ? (d.targetCurrentPercent + ' %') : '--';
     document.getElementById('val-target-speed').innerText = hasTargets ? (d.targetSpeedPercent + ' %') : '--';
     document.getElementById('val-cadence').innerText = hasTargets ? (d.cadenceRpm + ' RPM') : '--';
+    document.getElementById('val-motor-rpm').innerText = hasTargets ? (d.motorRpm + ' RPM') : '--';
     const targetsState = document.getElementById('val-targets-state');
     targetsState.innerText = hasTargets ? 'live' : 'waiting';
     targetsState.className = 'badge ' + (hasTargets ? 'badge-active' : 'badge-neutral');
