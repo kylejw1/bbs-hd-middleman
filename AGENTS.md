@@ -101,14 +101,15 @@ $$\text{Checksum} = \left( \sum_{i=0}^{N-1} \text{byte}_i \right) \pmod{256}$$
 The fork's `app_process()` periodically (every `DEBUG_TELEMETRY_INTERVAL_MS`, 500 ms) calls `eventlog_write_telemetry()` so the middleman can display live motor targets that the display protocol never exposes:
 
 ```
-0xEC, target_current_percent, target_speed_percent, cadence_rpm_x10_hi, cadence_rpm_x10_lo, checksum
+0xEC, target_current_percent, target_speed_percent, cadence_rpm_x10_hi, cadence_rpm_x10_lo, motor_rpm_x10_hi, motor_rpm_x10_lo, checksum
 ```
 
 * `target_current_percent` / `target_speed_percent` are the final `motor_set_target_current()` / `motor_set_target_speed()` values (0–100).
 * `cadence_rpm_x10` is `pas_get_cadence_rpm_x10()` (pedal cadence × 10).
-* Checksum is the usual 8-bit sum over the first five bytes.
+* `motor_rpm_x10` is `hall_get_motor_rpm_x10()`: the motor output shaft speed × 10, measured from the three motor hall signals, which are wired to both the NEC motor controller and the STC. It is reported in output shaft (chainring / crank equivalent) rpm so it is directly comparable to the pedal cadence, and reads zero when the motor is not turning or on controllers whose hall routing has not been traced.
+* Checksum is the usual 8-bit sum over the first seven bytes.
 * It is only emitted while the event log is enabled (the middleman enables it at boot via `enableEventLog(true)`).
-* The middleman parses it in both bridge paths — `processControllerRxPassThrough()` and `consumeControllerEventFrame()` — updates `TelemetryTracker::updateTargetTelemetry()`, and **swallows** it like the other event frames (never forwarded to the display). `/api/telemetry` exposes `hasTargetTelemetry`, `targetCurrentPercent`, `targetSpeedPercent`, `cadenceRpm`, which the dashboard "Motor Targets (bbs-fw)" card renders.
+* The middleman parses it in both bridge paths — `processControllerRxPassThrough()` and `consumeControllerEventFrame()` — updates `TelemetryTracker::updateTargetTelemetry()`, and **swallows** it like the other event frames (never forwarded to the display). `/api/telemetry` exposes `hasTargetTelemetry`, `targetCurrentPercent`, `targetSpeedPercent`, `cadenceRpm` and `motorRpm`, which the dashboard "Motor Targets (bbs-fw)" card renders.
 
 ### Binary Configuration Struct Layout (Version 5, 154 Bytes)
 Defined in [`include/BbsFwProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/include/BbsFwProtocol.h):
@@ -116,6 +117,8 @@ Defined in [`include/BbsFwProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/in
 * `standard_levels[10]`: $10 \times 6 = 60$ bytes (`AssistLevel`: flags, current%, throttle%, cadence%, speed%, torque_amp).
 * `sport_levels[10]`: $10 \times 6 = 60$ bytes.
 * Total size: $34 + 60 + 60 = 154$ bytes (`#pragma pack(push, 1)`).
+
+**Current firmware target: version 5.** The bbs-fw tree in use is based on commit `10cadba` (config version 5), so v5 is the layout that will actually be seen on the wire. The v6 support below is retained and version-gated but currently unused; no build-time switch is needed because the layout is chosen from the version the controller reports.
 
 ### Binary Configuration Struct Layout (Version 6, 192 Bytes)
 Config v6 (bbs-fw fork commit "per-assist-level PAS min current and cadence taper, display target current") is **not** a superset of v5:
