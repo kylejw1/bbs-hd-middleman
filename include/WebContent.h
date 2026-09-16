@@ -216,7 +216,7 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
             <strong id="val-target-current">--</strong>
           </div>
           <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-            <span style="color:var(--text-muted)">Target Speed</span>
+            <span style="color:var(--text-muted)">Motor Speed Limit</span>
             <strong id="val-target-speed">--</strong>
           </div>
           <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
@@ -651,10 +651,38 @@ function switchTab(tabId) {
 // v4/v5 levels: flags, target current %, max throttle %, max cadence %, max speed %.
 // v6 levels:    flags, max/min current %, cadence taper start/end (RPM), max throttle %, max speed %.
 let levelsTableVersion = null;
+let levelsTableMaxRpm = null;
+
+// The per-level cadence limit is stored as a percentage of the controller's
+// maximum motor speed, so the percentage is meaningless on its own: 42% is 70
+// rpm on a BBSHD but 63 rpm on a BBS02. These mirror MAX_CADENCE_RPM_X10 in
+// bbs-fw/src/firmware/fwconfig.h and let the UI show the value in rpm.
+let controllerTypeName = '';
+let controllerMaxCadenceRpm = 168;
+
+function controllerMaxCadenceRpmFor(typeName) {
+  const t = String(typeName || '').toUpperCase();
+  if (t.indexOf('BBS02') >= 0) return 150;
+  if (t.indexOf('TSDZ2') >= 0) return 120;
+  return 168; // BBSHD, and the default while the type is still unknown
+}
+
+function cadencePercentToRpm(percent) {
+  if (percent === null || percent === undefined || isNaN(percent)) return null;
+  // Floor rather than round, so a whole rpm the user typed comes back unchanged
+  // more often than not given the coarse one-percent storage.
+  return Math.floor(percent * controllerMaxCadenceRpm / 100);
+}
+
+function cadenceRpmToPercent(rpm) {
+  if (rpm === null || rpm === undefined || isNaN(rpm)) return null;
+  return Math.round(rpm * 100 / controllerMaxCadenceRpm);
+}
 
 function buildLevelTables(version) {
   const v6 = version >= 6;
   levelsTableVersion = version;
+  levelsTableMaxRpm = controllerMaxCadenceRpm;
 
   ['std', 'sport'].forEach(type => {
     const table = document.getElementById(`tbl-levels-${type}`);
@@ -662,9 +690,9 @@ function buildLevelTables(version) {
     const tbody = table.querySelector('tbody');
 
     const heads = v6
-      ? ['Lvl', 'Max Cur %', 'Min Cur %', 'Taper Start', 'Taper End', 'Max Throt %', 'Speed %',
+      ? ['Lvl', 'Max Cur %', 'Min Cur %', 'Taper Start (rpm)', 'Taper End (rpm)', 'Max Throt %', 'Road Speed %',
          'PAS', 'Throt', 'Cruise', 'Cad. Over', 'Spd. Over', 'PAS Var', 'PAS Torq', 'Disp Tgt']
-      : ['Lvl', 'Current %', 'Max Throt %', 'Cadence %', 'Speed %',
+      : ['Lvl', 'Current %', 'Max Throt %', 'Max Cadence (rpm)', 'Road Speed %',
          'PAS', 'Throt', 'Cruise', 'Cad. Over', 'Spd. Over', 'PAS Var', 'PAS Torq'];
     thead.innerHTML = '<tr>' + heads.map(h => '<th>' + h + '</th>').join('') + '</tr>';
 
@@ -679,7 +707,7 @@ function buildLevelTables(version) {
            <td><input type="number" min="0" max="100" id="${type}-spd-${i}"></td>`
         : `<td><input type="number" min="0" max="100" id="${type}-curr-${i}"></td>
            <td><input type="number" min="0" max="100" id="${type}-throt-${i}"></td>
-           <td><input type="number" min="0" max="100" id="${type}-cad-${i}"></td>
+           <td><input type="number" min="0" max="${levelsTableMaxRpm}" id="${type}-cad-${i}"></td>
            <td><input type="number" min="0" max="100" id="${type}-spd-${i}"></td>`;
 
       const flags = `
@@ -699,8 +727,10 @@ function buildLevelTables(version) {
   });
 
   const note = v6
-    ? 'Config v6: per-level max/min current % and a cadence (RPM) taper range.'
-    : 'Configure target motor current %, throttle %, cadence %, and override flags per assist level.';
+    ? 'Config v6: per-level max/min current % and a cadence (rpm) taper range.'
+    : 'Max Cadence is in rpm. The controller stores it as a percentage of the motor maximum ('
+      + levelsTableMaxRpm + ' rpm), so values snap to about ' + (levelsTableMaxRpm / 100).toFixed(1)
+      + ' rpm steps. Road Speed % is a percentage of the global max speed (km/h).';
   document.getElementById('levels-std-note').textContent = note;
   document.getElementById('levels-sport-note').textContent = note;
 }
@@ -744,8 +774,16 @@ async function pollTelemetry() {
 
     // Live bbs-fw targets (0xEC debug telemetry frame)
     const hasTargets = d.hasTargetTelemetry === true;
+
+    // Which controller is attached decides what 100% cadence means in rpm.
+    if (typeof d.controllerType === 'string' && d.controllerType) {
+      controllerTypeName = d.controllerType;
+      controllerMaxCadenceRpm = controllerMaxCadenceRpmFor(controllerTypeName);
+    }
     document.getElementById('val-target-current').innerText = hasTargets ? (d.targetCurrentPercent + ' %') : '--';
-    document.getElementById('val-target-speed').innerText = hasTargets ? (d.targetSpeedPercent + ' %') : '--';
+    const targetSpeedRpm = cadencePercentToRpm(d.targetSpeedPercent);
+    document.getElementById('val-target-speed').innerText =
+      hasTargets ? (targetSpeedRpm + ' rpm') : '--';
     document.getElementById('val-cadence').innerText = hasTargets ? (d.cadenceRpm + ' RPM') : '--';
     document.getElementById('val-motor-rpm').innerText = hasTargets ? (d.motorRpm + ' RPM') : '--';
     const targetsState = document.getElementById('val-targets-state');
@@ -887,7 +925,12 @@ function populateConfigForm(cfg) {
   const version = (typeof cfg.configVersion === 'number') ? cfg.configVersion : 5;
   const v6 = version >= 6;
 
-  if (levelsTableVersion !== version) buildLevelTables(version);
+  // The controller's maximum cadence scales the rpm shown for the cadence
+  // column, so rebuild if either the config version or the controller changed.
+  controllerMaxCadenceRpm = controllerMaxCadenceRpmFor(controllerTypeName);
+  if (levelsTableVersion !== version || levelsTableMaxRpm !== controllerMaxCadenceRpm) {
+    buildLevelTables(version);
+  }
   setAssistModeOptions(version);
 
   const badge = document.getElementById('cfg-version-badge');
@@ -948,7 +991,8 @@ function populateConfigForm(cfg) {
         $(`${type}-tend-${i}`).value = lvl.taperEndCadence;
       } else {
         $(`${type}-curr-${i}`).value = lvl.current;
-        $(`${type}-cad-${i}`).value = lvl.cadence;
+        const cadRpm = cadencePercentToRpm(lvl.cadence);
+        $(`${type}-cad-${i}`).value = (cadRpm === null) ? '' : cadRpm;
       }
       $(`${type}-throt-${i}`).value = lvl.maxThrottle;
       $(`${type}-spd-${i}`).value = lvl.speed;
@@ -1051,7 +1095,8 @@ function collectConfigFromForm() {
         lvl.displayTargetCurrent = checked(`${type}-dtc-${i}`);
       } else {
         lvl.current = formInt(`${type}-curr-${i}`);
-        lvl.cadence = formInt(`${type}-cad-${i}`);
+        const cadRpm = formInt(`${type}-cad-${i}`);
+        lvl.cadence = (cadRpm === null) ? null : cadenceRpmToPercent(cadRpm);
       }
       targetArr.push(lvl);
     }
