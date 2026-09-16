@@ -257,6 +257,18 @@ void SerialBridge::processControllerRxPassThrough() {
 void SerialBridge::handleControllerPacket(const uint8_t* buf, size_t len) {
     if (len < 1) return;
 
+    // Every display read opcode MUST appear below with its response length.
+    //
+    // Clearing the buffer here is what establishes "we are at a frame boundary",
+    // which is how processControllerRxPassThrough() knows to look for the 0xEC
+    // telemetry header. If an opcode falls through to default the buffer stays
+    // dirty for as long as the bus stays busy (responses less than the 30ms idle
+    // backstop apart), _controllerBuf[0] is then a stale response byte rather
+    // than 0xEC, and the next telemetry frame is appended and forwarded
+    // straight to the display as if it were response data.
+    //
+    // Response lengths are the uart_write counts in bbs-fw's
+    // process_bafang_display_read_* handlers.
     switch (_lastDisplayOpcode) {
         case OPCODE_DISPLAY_READ_STATUS:
             if (len >= 1) {
@@ -292,6 +304,31 @@ void SerialBridge::handleControllerPacket(const uint8_t* buf, size_t len) {
             if (len >= 3) {
                 uint16_t volt_x10 = (buf[0] << 8) | buf[1];
                 Telemetry.updateBatteryVoltage(volt_x10 / 10.0f);
+                _controllerBufLen = 0;
+            }
+            break;
+
+        // The remaining read opcodes carry nothing the dashboard consumes, but
+        // they still have to clear the buffer so the next telemetry frame is
+        // recognised at a frame boundary.
+        case OPCODE_DISPLAY_READ_UNKNOWN1:
+        case OPCODE_DISPLAY_READ_RANGE:
+            // 0x21 is a fixed three byte zero field; 0x22 is configuration
+            // dependent (temperature or power, see DISPLAY_RANGE_FIELD_DATA).
+            if (len >= 3) {
+                _controllerBufLen = 0;
+            }
+            break;
+
+        case OPCODE_DISPLAY_READ_UNKNOWN3:
+            // Five fixed zero bytes.
+            if (len >= 5) {
+                _controllerBufLen = 0;
+            }
+            break;
+
+        case OPCODE_DISPLAY_READ_MOVING:
+            if (len >= 2) {
                 _controllerBufLen = 0;
             }
             break;
