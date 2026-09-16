@@ -567,11 +567,44 @@ bool SerialBridge::receiveController(uint8_t* buf, size_t len, uint32_t timeoutM
     return true;
 }
 
-bool SerialBridge::sendAndReceiveController(const uint8_t* txBuf, size_t txLen, uint8_t* rxBuf, size_t expectedLen, uint32_t timeoutMs) {
-    // Flush stale data from controller RX
-    while (_controllerSerial.available()) {
-        _controllerSerial.read();
+// Drain the controller UART, but only return once the line has been idle for a
+// whole byte time so that we are certainly at a frame boundary.
+//
+// The controller writes event and telemetry frames back to back, so an idle gap
+// longer than one byte means no frame is in flight. The plain "while available,
+// read" flush this replaces could stop half way through a frame that happened to
+// be arriving, leaving a partial frame at the head of the buffer. The response
+// read afterwards was then desynchronised and looked like garbage - typically
+// "00 EC EC 00" (the tail of a telemetry frame followed by the start of the next
+// one) instead of the expected 02 F1 xx chk - and was reported as a checksum
+// mismatch even though the controller had answered correctly.
+bool SerialBridge::waitControllerIdle(uint32_t quietMs, uint32_t timeoutMs) {
+    uint32_t deadlineMs = millis() + timeoutMs;
+    uint32_t lastByteMs = millis();
+
+    for (;;) {
+        if (_controllerSerial.available()) {
+            _controllerSerial.read();
+            lastByteMs = millis();
+            continue;
+        }
+
+        if ((uint32_t)(millis() - lastByteMs) >= quietMs) {
+            return true;
+        }
+
+        if ((int32_t)(deadlineMs - millis()) <= 0) {
+            Debug.trace("Controller line never went idle; response may be desynchronised");
+            return false;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
+}
+
+bool SerialBridge::sendAndReceiveController(const uint8_t* txBuf, size_t txLen, uint8_t* rxBuf, size_t expectedLen, uint32_t timeoutMs) {
+    // Drain stale data from controller RX, ending on a frame boundary.
+    waitControllerIdle(CONTROLLER_FRAME_QUIET_MS, CONTROLLER_FRAME_IDLE_TIMEOUT_MS);
 
     // Send request
     _controllerSerial.write(txBuf, txLen);

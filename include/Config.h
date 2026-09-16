@@ -73,6 +73,13 @@
 // Timeout waiting for controller response during config transactions
 #define CONTROLLER_TIMEOUT_MS   2500
 
+// The controller emits event/telemetry frames asynchronously, written back to
+// back. Before a config transaction we wait for the line to be idle for this
+// long so we are certainly at a frame boundary; one byte at 1200 baud takes
+// 8.33 ms, so a 25 ms gap cannot be in the middle of a frame.
+#define CONTROLLER_FRAME_QUIET_MS         25
+#define CONTROLLER_FRAME_IDLE_TIMEOUT_MS  1000
+
 // Maximum queued display write commands while in config mode
 #define MAX_QUEUED_DISPLAY_CMDS 8
 

@@ -87,6 +87,7 @@ private:
     bool sendAndReceiveController(const uint8_t* txBuf, size_t txLen, uint8_t* rxBuf, size_t expectedLen, uint32_t timeoutMs);
     bool receiveController(uint8_t* buf, size_t len, uint32_t timeoutMs);
     bool consumeControllerEventFrame(uint8_t firstByte, uint32_t deadlineMs);
+    bool waitControllerIdle(uint32_t quietMs, uint32_t timeoutMs);
     void flushQueuedDisplayWrites();
 };
 
