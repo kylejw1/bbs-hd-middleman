@@ -6,7 +6,7 @@ static_assert(sizeof(BbsFwConfigV5) == BBS_FW_CONFIG_V5_SIZE, "BbsFwConfigV5 siz
 static_assert(sizeof(BbsFwConfigV6) == BBS_FW_CONFIG_V6_SIZE, "BbsFwConfigV6 size changed");
 static_assert(sizeof(BbsFwConfigV4) == BBS_FW_CONFIG_V4_SIZE, "BbsFwConfigV4 size changed");
 static_assert(sizeof(AssistLevel) == 6, "AssistLevel size changed");
-static_assert(sizeof(AssistLevelV6) == 8, "AssistLevelV6 size changed");
+static_assert(sizeof(AssistLevelV6) == 7, "AssistLevelV6 size changed");
 
 void convertConfigV4toV5(const BbsFwConfigV4& src, BbsFwConfigV5& dst) {
     uint8_t* d = reinterpret_cast<uint8_t*>(&dst);
@@ -258,32 +258,30 @@ bool serializeConfigToJson(const BbsFwConfig& cfg, JsonDocument& doc) {
     if (cfg.isV6()) {
         const BbsFwConfigV6& c = cfg.v6;
         serializeCommonConfig(c, doc);
+        doc["pasKeepCurrentPercent"] = c.pas_keep_current_percent;
+        doc["pasKeepCurrentCadenceRpm"] = c.pas_keep_current_cadence_rpm;
 
         for (int i = 0; i < 10; ++i) {
             const AssistLevelV6& l = c.standard_levels[i];
             JsonObject lvl = stdArr.add<JsonObject>();
             serializeLevelFlags(l.flags, lvl);
-            lvl["displayTargetCurrent"] = (l.flags & ASSIST_FLAG_DISPLAY_TARGET_CURRENT) != 0;
-            lvl["maxCurrent"] = l.max_current_percent;
-            lvl["minCurrent"] = l.min_current_percent;
-            lvl["taperStartCadence"] = l.taper_start_cadence_rpm;
-            lvl["taperEndCadence"] = l.taper_end_cadence_rpm;
+            lvl["current"] = l.target_current_percent;
             lvl["maxThrottle"] = l.max_throttle_current_percent;
+            lvl["cadence"] = l.max_cadence_percent;
             lvl["speed"] = l.max_speed_percent;
             lvl["torqueAmp"] = l.torque_amplification_factor_x10 / 10.0f;
+            lvl["targetRpmOffset"] = l.target_rpm_offset;
         }
         for (int i = 0; i < 10; ++i) {
             const AssistLevelV6& l = c.sport_levels[i];
             JsonObject lvl = sportArr.add<JsonObject>();
             serializeLevelFlags(l.flags, lvl);
-            lvl["displayTargetCurrent"] = (l.flags & ASSIST_FLAG_DISPLAY_TARGET_CURRENT) != 0;
-            lvl["maxCurrent"] = l.max_current_percent;
-            lvl["minCurrent"] = l.min_current_percent;
-            lvl["taperStartCadence"] = l.taper_start_cadence_rpm;
-            lvl["taperEndCadence"] = l.taper_end_cadence_rpm;
+            lvl["current"] = l.target_current_percent;
             lvl["maxThrottle"] = l.max_throttle_current_percent;
+            lvl["cadence"] = l.max_cadence_percent;
             lvl["speed"] = l.max_speed_percent;
             lvl["torqueAmp"] = l.torque_amplification_factor_x10 / 10.0f;
+            lvl["targetRpmOffset"] = l.target_rpm_offset;
         }
     } else {
         const BbsFwConfigV5& c = cfg.v5;
@@ -324,25 +322,23 @@ bool deserializeConfigFromJson(const JsonDocument& doc, BbsFwConfig& cfg) {
         memset(&c, 0, sizeof(c));
         deserializeCommonConfig(doc, c);
 
+        if (doc["pasKeepCurrentPercent"].is<uint8_t>()) c.pas_keep_current_percent = doc["pasKeepCurrentPercent"];
+        if (doc["pasKeepCurrentCadenceRpm"].is<uint8_t>()) c.pas_keep_current_cadence_rpm = doc["pasKeepCurrentCadenceRpm"];
+
         if (doc["standardLevels"].is<JsonArrayConst>()) {
             JsonArrayConst arr = doc["standardLevels"].as<JsonArrayConst>();
             for (size_t i = 0; i < arr.size() && i < 10; ++i) {
                 JsonObjectConst lvl = arr[i];
-                uint8_t flags = deserializeLevelFlags(lvl);
-                if (lvl["displayTargetCurrent"].is<bool>() && lvl["displayTargetCurrent"]) {
-                    flags |= ASSIST_FLAG_DISPLAY_TARGET_CURRENT;
-                }
                 AssistLevelV6& l = c.standard_levels[i];
-                l.flags = flags;
-                if (lvl["maxCurrent"].is<uint8_t>()) l.max_current_percent = lvl["maxCurrent"];
-                if (lvl["minCurrent"].is<uint8_t>()) l.min_current_percent = lvl["minCurrent"];
-                if (lvl["taperStartCadence"].is<uint8_t>()) l.taper_start_cadence_rpm = lvl["taperStartCadence"];
-                if (lvl["taperEndCadence"].is<uint8_t>()) l.taper_end_cadence_rpm = lvl["taperEndCadence"];
+                l.flags = deserializeLevelFlags(lvl);
+                if (lvl["current"].is<uint8_t>()) l.target_current_percent = lvl["current"];
                 if (lvl["maxThrottle"].is<uint8_t>()) l.max_throttle_current_percent = lvl["maxThrottle"];
+                if (lvl["cadence"].is<uint8_t>()) l.max_cadence_percent = lvl["cadence"];
                 if (lvl["speed"].is<uint8_t>()) l.max_speed_percent = lvl["speed"];
                 if (lvl["torqueAmp"].is<float>()) {
                     l.torque_amplification_factor_x10 = (uint8_t)(lvl["torqueAmp"].as<float>() * 10.0f);
                 }
+                if (lvl["targetRpmOffset"].is<uint8_t>()) l.target_rpm_offset = lvl["targetRpmOffset"];
             }
         }
 
@@ -350,21 +346,16 @@ bool deserializeConfigFromJson(const JsonDocument& doc, BbsFwConfig& cfg) {
             JsonArrayConst arr = doc["sportLevels"].as<JsonArrayConst>();
             for (size_t i = 0; i < arr.size() && i < 10; ++i) {
                 JsonObjectConst lvl = arr[i];
-                uint8_t flags = deserializeLevelFlags(lvl);
-                if (lvl["displayTargetCurrent"].is<bool>() && lvl["displayTargetCurrent"]) {
-                    flags |= ASSIST_FLAG_DISPLAY_TARGET_CURRENT;
-                }
                 AssistLevelV6& l = c.sport_levels[i];
-                l.flags = flags;
-                if (lvl["maxCurrent"].is<uint8_t>()) l.max_current_percent = lvl["maxCurrent"];
-                if (lvl["minCurrent"].is<uint8_t>()) l.min_current_percent = lvl["minCurrent"];
-                if (lvl["taperStartCadence"].is<uint8_t>()) l.taper_start_cadence_rpm = lvl["taperStartCadence"];
-                if (lvl["taperEndCadence"].is<uint8_t>()) l.taper_end_cadence_rpm = lvl["taperEndCadence"];
+                l.flags = deserializeLevelFlags(lvl);
+                if (lvl["current"].is<uint8_t>()) l.target_current_percent = lvl["current"];
                 if (lvl["maxThrottle"].is<uint8_t>()) l.max_throttle_current_percent = lvl["maxThrottle"];
+                if (lvl["cadence"].is<uint8_t>()) l.max_cadence_percent = lvl["cadence"];
                 if (lvl["speed"].is<uint8_t>()) l.max_speed_percent = lvl["speed"];
                 if (lvl["torqueAmp"].is<float>()) {
                     l.torque_amplification_factor_x10 = (uint8_t)(lvl["torqueAmp"].as<float>() * 10.0f);
                 }
+                if (lvl["targetRpmOffset"].is<uint8_t>()) l.target_rpm_offset = lvl["targetRpmOffset"];
             }
         }
         return true;

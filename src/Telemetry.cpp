@@ -19,6 +19,7 @@ TelemetryTracker::TelemetryTracker()
     , _motorTempC(25)
     , _wheelSizeInch(27.5f)
     , _hasTargetTelemetry(false)
+    , _lastTargetTelemetryMs(0)
     , _targetCurrentPercent(0)
     , _targetSpeedPercent(0)
     , _cadenceRpmX10(0)
@@ -121,13 +122,15 @@ void TelemetryTracker::updateTemperature(int8_t controllerC, int8_t motorC) {
     }
 }
 
-void TelemetryTracker::updateTargetTelemetry(uint8_t targetCurrentPercent, uint8_t targetSpeedPercent, uint16_t cadenceRpmX10, uint16_t motorRpmX10) {
+void TelemetryTracker::updateTargetTelemetry(uint8_t targetCurrentPercent, uint8_t targetSpeedPercent,
+                                             uint16_t cadenceRpmX10, uint16_t motorRpmX10) {
     if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         _targetCurrentPercent = targetCurrentPercent;
         _targetSpeedPercent = targetSpeedPercent;
         _cadenceRpmX10 = cadenceRpmX10;
         _motorRpmX10 = motorRpmX10;
         _hasTargetTelemetry = true;
+        _lastTargetTelemetryMs = millis();
         xSemaphoreGive(_mutex);
     }
 }
@@ -235,6 +238,15 @@ bool TelemetryTracker::isControllerActive() const {
     return (millis() - _lastControllerRxMs) < 2500;
 }
 
+bool TelemetryTracker::hasTargetTelemetry() const {
+    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        bool active = _hasTargetTelemetry && (millis() - _lastTargetTelemetryMs < 4000);
+        xSemaphoreGive(_mutex);
+        return active;
+    }
+    return false;
+}
+
 void TelemetryTracker::buildTelemetryJson(JsonDocument& doc) {
     if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
         doc["speedRpm"] = _speedRpm;
@@ -252,11 +264,13 @@ void TelemetryTracker::buildTelemetryJson(JsonDocument& doc) {
         doc["motorTempC"] = _motorTempC;
 
         // Live bbs-fw targets, pushed from the firmware's 0xEC debug frame.
-        doc["hasTargetTelemetry"] = _hasTargetTelemetry;
-        doc["targetCurrentPercent"] = _targetCurrentPercent;
-        doc["targetSpeedPercent"] = _targetSpeedPercent;
-        doc["cadenceRpm"] = serialized(String(_cadenceRpmX10 / 10.0f, 1));
-        doc["motorRpm"] = serialized(String(_motorRpmX10 / 10.0f, 1));
+        bool targetFresh = _hasTargetTelemetry && (millis() - _lastTargetTelemetryMs < 4000);
+        doc["hasTargetTelemetry"] = targetFresh;
+        doc["targetCurrentPercent"] = targetFresh ? _targetCurrentPercent : 0;
+        doc["targetSpeedPercent"] = targetFresh ? _targetSpeedPercent : 0;
+        doc["cadenceRpm"] = serialized(String(targetFresh ? (_cadenceRpmX10 / 10.0f) : 0.0f, 1));
+        doc["motorRpm"] = serialized(String(targetFresh ? (_motorRpmX10 / 10.0f) : 0.0f, 1));
+
 
         doc["displayConnected"] = isDisplayActive();
         doc["controllerConnected"] = isControllerActive();

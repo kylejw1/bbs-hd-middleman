@@ -502,7 +502,8 @@ void SerialBridge::flushQueuedDisplayWrites() {
 // into telemetry) rather than counted as the transaction response, otherwise a
 // write gets "checksum mismatch" and fails even though the controller accepted it.
 // Frame shapes: 0xEE <id> <chk> (3), 0xED <id> <hi> <lo> <chk> (5),
-// 0xEC <cur> <spd> <cad_hi> <cad_lo> <mot_hi> <mot_lo> <chk> (8).
+// 0xEC <cur> <spd> <cad_hi> <cad_lo> <mot_hi> <mot_lo> <tau_hi> <tau_lo>
+//      <bias_hi> <bias_lo> <flags> <chk> (13).
 // `firstByte` is already consumed.
 bool SerialBridge::consumeControllerEventFrame(uint8_t firstByte, uint32_t deadlineMs) {
     size_t evtSize;
@@ -727,7 +728,7 @@ bool SerialBridge::readConfig(BbsFwConfig& config, uint32_t timeoutMs) {
 
     // Phase 1: read the 4-byte header (req, opcode, version, length) so we know
     // how many payload bytes to expect before we commit to a fixed-length receive.
-    uint8_t frame[4 + BBS_FW_CONFIG_V6_SIZE + 1]; // max possible V6 frame = 197 bytes
+    uint8_t frame[4 + BBS_FW_CONFIG_V6_SIZE + 1]; // max possible V6 frame = 179 bytes
     bool ok = receiveController(frame, 4, timeoutMs);
 
     if (!ok) {
@@ -792,7 +793,7 @@ bool SerialBridge::writeConfig(const BbsFwConfig& config, uint32_t timeoutMs) {
     delay(BUS_QUIET_TIME_MS);
 
     // Frame: 0x02, 0xf1, version, len, ...config bytes..., checksum
-    // The controller only accepts its own config version: V6 (192 bytes), V5
+    // The controller only accepts its own config version: V6 (174 bytes), V5
     // (154 bytes) or the legacy V4 (152 bytes).
     uint8_t targetVersion = _configVersion;
     if (targetVersion != BBS_FW_CONFIG_VERSION_6 &&

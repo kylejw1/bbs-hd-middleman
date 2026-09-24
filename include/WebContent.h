@@ -110,6 +110,159 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
 .t-ctx { color: #fb7185; }
 .t-sys { color: #94a3b8; }
 .t-dropped { color: var(--accent-rose); font-weight: 700; }
+
+/* Cadence Curve Modal */
+.modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(15, 23, 42, 0.82);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+.modal-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+.modal-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  width: 100%;
+  max-width: 760px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  max-height: 92vh;
+}
+.modal-header {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #0b1120;
+}
+.modal-header h3 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--accent-cyan);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.modal-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.5rem;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 6px;
+  border-radius: 6px;
+  transition: 0.15s;
+}
+.modal-close-btn:hover {
+  color: var(--text-main);
+  background: var(--bg-card-alt);
+}
+.modal-body {
+  padding: 16px 20px;
+  overflow-y: auto;
+}
+.curve-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.curve-level-btns {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.curve-lvl-btn {
+  width: 32px;
+  height: 32px;
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-main);
+  font-weight: 700;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: 0.15s;
+}
+.curve-lvl-btn:hover {
+  background: #475569;
+}
+.curve-lvl-btn.active {
+  border-color: var(--accent-cyan);
+  background: rgba(6, 182, 212, 0.25);
+  color: var(--accent-cyan);
+}
+.curve-stats-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+  background: #0f172a;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.curve-stat-item {
+  display: flex;
+  flex-direction: column;
+}
+.curve-stat-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-weight: 600;
+  letter-spacing: 0.4px;
+}
+.curve-stat-value {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-main);
+  margin-top: 2px;
+}
+.curve-canvas-wrap {
+  position: relative;
+  background: #070d18;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px;
+  user-select: none;
+  touch-action: none;
+}
+#cadence-canvas {
+  width: 100%;
+  height: 280px;
+  display: block;
+  cursor: crosshair;
+}
+.curve-cursor-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(6, 182, 212, 0.08);
+  border: 1px solid rgba(6, 182, 212, 0.25);
+  border-radius: 8px;
+  padding: 8px 14px;
+  margin-top: 10px;
+  font-size: 0.85rem;
+}
 </style>
 </head>
 <body>
@@ -254,6 +407,29 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
         <button class="pas-btn" onclick="setPas(9)">9</button>
       </div>
     </div>
+
+    <!-- Live PAS Cadence & Target Current Graph -->
+    <div class="card" style="margin-bottom:20px;">
+      <div class="card-header">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span class="card-title">Live Target Current vs Cadence</span>
+          <span class="badge badge-active" id="dash-pas-badge">PAS 1 (Standard)</span>
+        </div>
+        <button class="btn btn-secondary" style="padding:4px 10px; font-size:0.75rem;" onclick="openCadenceGraphModal(currentMode === 1 ? 'sport' : 'std', currentPas)">🔍 Inspect / Edit</button>
+      </div>
+      <div style="position:relative; background:#070d18; border:1px solid var(--border); border-radius:8px; padding:6px; cursor:pointer;" onclick="openCadenceGraphModal(currentMode === 1 ? 'sport' : 'std', currentPas)" title="Click to open interactive preview">
+        <canvas id="dash-cadence-canvas" style="width:100%; height:200px; display:block;"></canvas>
+      </div>
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-top:10px; font-size:0.85rem;">
+        <div>
+          <span style="color:var(--text-muted);">Live Telemetry Point: </span>
+          <strong id="dash-live-cadence" style="color:var(--accent-cyan);">-- RPM</strong>
+          <span style="margin: 0 6px; color:var(--border);">|</span>
+          <strong id="dash-live-target" style="color:var(--accent-emerald);">-- % (-- A)</strong>
+        </div>
+        <div id="dash-live-state" class="badge badge-neutral">waiting for telemetry</div>
+      </div>
+    </div>
   </div>
 
   <!-- ACTION BANNER (Visible on Config Tabs) -->
@@ -350,8 +526,8 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
             <input type="number" class="form-control" id="cfg-pasKeepCurrentCadenceRpm" min="0" max="255">
           </div>
         </div>
-        <div class="form-group" id="cfg-pas-v6-note" style="display:none;">
-          <small style="color:var(--accent-cyan);">Config v6 controllers configure minimum current and the cadence taper per assist level — see the Standard/Sport Levels tabs.</small>
+        <div style="margin-top:14px;">
+          <button type="button" class="btn btn-secondary" style="width:100%;" onclick="openCadenceGraphModal('std', currentPas || 1)">📈 Preview Current PAS Cadence Curve</button>
         </div>
       </div>
 
@@ -609,6 +785,69 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
   </div>
 </main>
 
+  <!-- CADENCE CURVE PREVIEW MODAL -->
+  <div id="cadence-modal" class="modal-overlay" onclick="handleModalBackdropClick(event)">
+    <div class="modal-card" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3><span>📈</span> Target Current vs. Cadence Curve</h3>
+        <button class="modal-close-btn" onclick="closeCadenceGraphModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="curve-controls">
+          <div style="display:flex; gap:6px; align-items:center;">
+            <span style="font-size:0.8rem; font-weight:600; color:var(--text-muted);">Mode:</span>
+            <button class="btn btn-secondary" id="modal-mode-btn" style="padding:4px 12px; font-size:0.8rem;" onclick="toggleModalMode()">Standard</button>
+          </div>
+          <div style="display:flex; gap:6px; align-items:center;">
+            <span style="font-size:0.8rem; font-weight:600; color:var(--text-muted);">PAS Level:</span>
+            <div class="curve-level-btns" id="modal-level-selector"></div>
+          </div>
+        </div>
+
+        <div class="curve-stats-bar">
+          <div class="curve-stat-item">
+            <span class="curve-stat-label">Target Max</span>
+            <span class="curve-stat-value" id="cs-target-max">--</span>
+          </div>
+          <div class="curve-stat-item">
+            <span class="curve-stat-label">Floor / Keep</span>
+            <span class="curve-stat-value" id="cs-floor">--</span>
+          </div>
+          <div class="curve-stat-item">
+            <span class="curve-stat-label">Taper / Ramp</span>
+            <span class="curve-stat-value" id="cs-ramp">--</span>
+          </div>
+          <div class="curve-stat-item">
+            <span class="curve-stat-label">Max Amps</span>
+            <span class="curve-stat-value" id="cs-max-amps">--</span>
+          </div>
+          <div class="curve-stat-item">
+            <span class="curve-stat-label">PAS Status</span>
+            <span class="curve-stat-value" id="cs-pas-status">--</span>
+          </div>
+        </div>
+
+        <div class="curve-canvas-wrap">
+          <canvas id="cadence-canvas"></canvas>
+        </div>
+
+        <div class="curve-cursor-info">
+          <div>
+            <span style="color:var(--text-muted);">Cadence: </span>
+            <strong id="cursor-cadence" style="color:var(--accent-cyan);">-- RPM</strong>
+            <span style="margin: 0 8px; color:var(--border);">|</span>
+            <span style="color:var(--text-muted);">Target Current: </span>
+            <strong id="cursor-current" style="color:var(--accent-emerald);">-- % (-- A)</strong>
+          </div>
+          <div id="cursor-state" class="badge badge-neutral" style="font-size:0.75rem;">--</div>
+        </div>
+        <p style="font-size:0.75rem; color:#64748b; margin-top:8px; text-align:center;">
+          💡 Click or drag across the graph to inspect exact target current at any pedal cadence.
+        </p>
+      </div>
+    </div>
+  </div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -618,6 +857,7 @@ let formTorque = { std: [], sport: [] };  // torque amp has no UI box; preserve 
 let currentPas = 1;
 let currentMode = 0; // 0 = standard, 1 = sport
 let currentLights = false;
+let latestTelemetry = null; // latest /api/telemetry response; read by renderDashCadenceGraph
 
 function showToast(msg) {
   const t = document.getElementById('toast');
@@ -649,7 +889,9 @@ function switchTab(tabId) {
 
 // Build Assist Level Tables for the controller's config version.
 // v4/v5 levels: flags, target current %, max throttle %, max cadence %, max speed %.
-// v6 levels:    flags, max/min current %, cadence taper start/end (RPM), max throttle %, max speed %.
+// v6 levels:    identical to v5, plus a per-level "Tgt RPM +" offset that the
+//               firmware adds to the measured pedal cadence when it derives the
+//               variable PAS speed target.
 let levelsTableVersion = null;
 
 function buildLevelTables(version) {
@@ -662,20 +904,19 @@ function buildLevelTables(version) {
     const tbody = table.querySelector('tbody');
 
     const heads = v6
-      ? ['Lvl', 'Max Cur %', 'Min Cur %', 'Taper Start (rpm)', 'Taper End (rpm)', 'Max Throt %', 'Road Speed %',
-         'PAS', 'Throt', 'Cruise', 'Cad. Over', 'Spd. Over', 'PAS Var', 'PAS Torq', 'Disp Tgt']
+      ? ['Lvl', 'Current %', 'Max Throt %', 'Max Cadence %', 'Tgt RPM +', 'Road Speed %',
+         'PAS', 'Throt', 'Cruise', 'Cad. Over', 'Spd. Over', 'PAS Var', 'PAS Torq', 'Curve']
       : ['Lvl', 'Current %', 'Max Throt %', 'Max Cadence %', 'Road Speed %',
-         'PAS', 'Throt', 'Cruise', 'Cad. Over', 'Spd. Over', 'PAS Var', 'PAS Torq'];
+         'PAS', 'Throt', 'Cruise', 'Cad. Over', 'Spd. Over', 'PAS Var', 'PAS Torq', 'Curve'];
     thead.innerHTML = '<tr>' + heads.map(h => '<th>' + h + '</th>').join('') + '</tr>';
 
     tbody.innerHTML = '';
     for (let i = 0; i < 10; ++i) {
       const numeric = v6
-        ? `<td><input type="number" min="0" max="100" id="${type}-maxcur-${i}"></td>
-           <td><input type="number" min="0" max="100" id="${type}-mincur-${i}"></td>
-           <td><input type="number" min="0" max="255" id="${type}-tstart-${i}"></td>
-           <td><input type="number" min="0" max="255" id="${type}-tend-${i}"></td>
+        ? `<td><input type="number" min="0" max="100" id="${type}-curr-${i}"></td>
            <td><input type="number" min="0" max="100" id="${type}-throt-${i}"></td>
+           <td><input type="number" min="0" max="100" id="${type}-cad-${i}"></td>
+           <td><input type="number" min="0" max="255" id="${type}-rpmoff-${i}"></td>
            <td><input type="number" min="0" max="100" id="${type}-spd-${i}"></td>`
         : `<td><input type="number" min="0" max="100" id="${type}-curr-${i}"></td>
            <td><input type="number" min="0" max="100" id="${type}-throt-${i}"></td>
@@ -690,16 +931,19 @@ function buildLevelTables(version) {
         <td><input type="checkbox" id="${type}-os-${i}"></td>
         <td><input type="checkbox" id="${type}-pv-${i}"></td>
         <td><input type="checkbox" id="${type}-pt-${i}"></td>`;
-      const dtc = v6 ? `<td><input type="checkbox" id="${type}-dtc-${i}"></td>` : '';
+      const curveBtn = `<td><button type="button" class="btn btn-secondary" style="padding:2px 8px; font-size:0.75rem; white-space:nowrap;" onclick="openCadenceGraphModal('${type}', ${i})">📈 Curve</button></td>`;
 
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td><strong>${i}</strong></td>${numeric}${flags}${dtc}`;
+      tr.innerHTML = `<td><strong>${i}</strong></td>${numeric}${flags}${curveBtn}`;
       tbody.appendChild(tr);
     }
   });
 
   const note = v6
-    ? 'Config v6: per-level max/min current % and a cadence (rpm) taper range.'
+    ? 'Config v6 is config v5 plus the per-level "Tgt RPM +" column: an offset in rpm added to the '
+      + 'measured pedal cadence when the firmware derives the variable PAS speed target, so the motor '
+      + 'may run ahead of your legs. 0 disables it. At the 48 V motor maximum cadence (120 rpm) an '
+      + 'offset large enough to reach 100% pins the speed target at full scale.'
     : 'These are the values as stored in the controller, in percent. Max Cadence % is relative '
       + 'to the motor maximum speed, Road Speed % to the configured global max speed.';
   document.getElementById('levels-std-note').textContent = note;
@@ -707,15 +951,14 @@ function buildLevelTables(version) {
 }
 buildLevelTables(5);
 
-// Assist mode options differ between v5 (0-2) and v6 (0-13).
+// These are firmware features, not config-version features: every config version
+// the tool speaks (v4/v5/v6) offers the full 0-13 range.
 function setAssistModeOptions(version) {
   const sel = document.getElementById('cfg-assistModeSelect');
   const keep = sel.value;
   const opts = [['', ''], ['0', 'Off (Fixed mode)'], ['1', 'Standard (Display button)'], ['2', 'Lights (Headlight switch)']];
-  if (version >= 6) {
-    for (let i = 0; i <= 9; ++i) opts.push([String(3 + i), 'PAS ' + i + ' + Lights toggles mode']);
-    opts.push(['13', 'Brake switch toggles mode on boot']);
-  }
+  for (let i = 0; i <= 9; ++i) opts.push([String(3 + i), 'PAS ' + i + ' + Lights toggles mode']);
+  opts.push(['13', 'Brake switch toggles mode on boot']);
   sel.innerHTML = opts.map(o => `<option value="${o[0]}">${o[1]}</option>`).join('');
   if (keep !== '') sel.value = keep;
 }
@@ -750,6 +993,7 @@ async function pollTelemetry() {
     document.getElementById('val-target-speed').innerText = hasTargets ? (d.targetSpeedPercent + ' %') : '--';
     document.getElementById('val-cadence').innerText = hasTargets ? (d.cadenceRpm + ' RPM') : '--';
     document.getElementById('val-motor-rpm').innerText = hasTargets ? (d.motorRpm + ' RPM') : '--';
+
     const targetsState = document.getElementById('val-targets-state');
     targetsState.innerText = hasTargets ? 'live' : 'waiting';
     targetsState.className = 'badge ' + (hasTargets ? 'badge-active' : 'badge-neutral');
@@ -795,6 +1039,13 @@ async function pollTelemetry() {
 
     currentLights = d.lights;
     document.getElementById('btn-lights-toggle').innerText = 'Headlight: ' + (currentLights ? 'ON' : 'OFF');
+
+    latestTelemetry = d;
+    renderDashCadenceGraph();
+    const modal = document.getElementById('cadence-modal');
+    if (modal && modal.classList.contains('open')) {
+      renderCadenceGraph();
+    }
   } catch (e) { }
 }
 // Backed off from 600 ms: the UART only produces new values far slower than
@@ -839,6 +1090,7 @@ async function setPas(lvl) {
     await fetch('/api/cmd/pas', { method: 'POST', body: JSON.stringify({ level: lvl }), headers: {'Content-Type': 'application/json'} });
     currentPas = lvl;
     document.querySelectorAll('.pas-btn').forEach((btn, idx) => btn.classList.toggle('active', idx === lvl));
+    renderDashCadenceGraph();
   } catch(e) {}
 }
 
@@ -848,6 +1100,7 @@ async function toggleMode() {
     await fetch('/api/cmd/mode', { method: 'POST', body: JSON.stringify({ mode: newMode }), headers: {'Content-Type': 'application/json'} });
     currentMode = newMode;
     document.getElementById('btn-mode-toggle').innerText = 'Mode: ' + (newMode ? 'Sport' : 'Standard');
+    renderDashCadenceGraph();
   } catch(e) {}
 }
 
@@ -896,9 +1149,8 @@ function populateConfigForm(cfg) {
   badge.textContent = 'config v' + version;
   badge.className = 'badge ' + (v6 ? 'badge-active' : 'badge-neutral');
 
-  // v4/v5 keep a global keep-current; v6 folds it into per-level min current.
-  document.getElementById('cfg-pas-keepcurrent-group').style.display = v6 ? 'none' : 'block';
-  document.getElementById('cfg-pas-v6-note').style.display = v6 ? 'block' : 'none';
+  // Every supported config version keeps the global keep-current fields.
+  document.getElementById('cfg-pas-keepcurrent-group').style.display = 'block';
 
   formTorque = { std: new Array(10).fill(null), sport: new Array(10).fill(null) };
 
@@ -913,10 +1165,8 @@ function populateConfigForm(cfg) {
 
   document.getElementById('cfg-pasStartDelay').value = cfg.pasStartDelay;
   document.getElementById('cfg-pasStopDelayMs').value = cfg.pasStopDelayMs;
-  if (!v6) {
-    document.getElementById('cfg-pasKeepCurrentPercent').value = cfg.pasKeepCurrentPercent;
-    document.getElementById('cfg-pasKeepCurrentCadenceRpm').value = cfg.pasKeepCurrentCadenceRpm;
-  }
+  document.getElementById('cfg-pasKeepCurrentPercent').value = cfg.pasKeepCurrentPercent;
+  document.getElementById('cfg-pasKeepCurrentCadenceRpm').value = cfg.pasKeepCurrentCadenceRpm;
 
   document.getElementById('cfg-throttleStartMv').value = cfg.throttleStartMv;
   document.getElementById('cfg-throttleEndMv').value = cfg.throttleEndMv;
@@ -943,15 +1193,9 @@ function populateConfigForm(cfg) {
     const $ = id => document.getElementById(id);
     arr.forEach((lvl, i) => {
       if (i > 9) return;
-      if (v6) {
-        $(`${type}-maxcur-${i}`).value = lvl.maxCurrent;
-        $(`${type}-mincur-${i}`).value = lvl.minCurrent;
-        $(`${type}-tstart-${i}`).value = lvl.taperStartCadence;
-        $(`${type}-tend-${i}`).value = lvl.taperEndCadence;
-      } else {
-        $(`${type}-curr-${i}`).value = lvl.current;
-        $(`${type}-cad-${i}`).value = lvl.cadence;
-      }
+      $(`${type}-curr-${i}`).value = lvl.current;
+      $(`${type}-cad-${i}`).value = lvl.cadence;
+      if (v6) $(`${type}-rpmoff-${i}`).value = lvl.targetRpmOffset;
       $(`${type}-throt-${i}`).value = lvl.maxThrottle;
       $(`${type}-spd-${i}`).value = lvl.speed;
       $(`${type}-pas-${i}`).checked = lvl.pas;
@@ -961,10 +1205,15 @@ function populateConfigForm(cfg) {
       $(`${type}-os-${i}`).checked = lvl.overrideSpeed;
       $(`${type}-pv-${i}`).checked = lvl.pasVariable || false;
       $(`${type}-pt-${i}`).checked = lvl.pasTorque || false;
-      if (v6) $(`${type}-dtc-${i}`).checked = lvl.displayTargetCurrent || false;
       formTorque[type][i] = (typeof lvl.torqueAmp === 'number') ? lvl.torqueAmp : null;
     });
   });
+
+  renderDashCadenceGraph();
+  const modal = document.getElementById('cadence-modal');
+  if (modal && modal.classList.contains('open')) {
+    updateCadenceModal();
+  }
 }
 
 // Read a numeric box as a number, or null when it is empty/invalid. Nothing in
@@ -1019,10 +1268,8 @@ function collectConfigFromForm() {
     standardLevels: [],
     sportLevels: []
   };
-  if (!v6) {
-    cfg.pasKeepCurrentPercent = formInt('cfg-pasKeepCurrentPercent');
-    cfg.pasKeepCurrentCadenceRpm = formInt('cfg-pasKeepCurrentCadenceRpm');
-  }
+  cfg.pasKeepCurrentPercent = formInt('cfg-pasKeepCurrentPercent');
+  cfg.pasKeepCurrentCadenceRpm = formInt('cfg-pasKeepCurrentCadenceRpm');
 
   ['std', 'sport'].forEach(type => {
     const targetArr = (type === 'std') ? cfg.standardLevels : cfg.sportLevels;
@@ -1045,16 +1292,9 @@ function collectConfigFromForm() {
         // controller reported instead of overwriting it with a made-up default.
         torqueAmp: formTorque[type][i]
       };
-      if (v6) {
-        lvl.maxCurrent = formInt(`${type}-maxcur-${i}`);
-        lvl.minCurrent = formInt(`${type}-mincur-${i}`);
-        lvl.taperStartCadence = formInt(`${type}-tstart-${i}`);
-        lvl.taperEndCadence = formInt(`${type}-tend-${i}`);
-        lvl.displayTargetCurrent = checked(`${type}-dtc-${i}`);
-      } else {
-        lvl.current = formInt(`${type}-curr-${i}`);
-        lvl.cadence = formInt(`${type}-cad-${i}`);
-      }
+      lvl.current = formInt(`${type}-curr-${i}`);
+      lvl.cadence = formInt(`${type}-cad-${i}`);
+      if (v6) lvl.targetRpmOffset = formInt(`${type}-rpmoff-${i}`);
       targetArr.push(lvl);
     }
   });
@@ -1075,14 +1315,14 @@ function findMissingConfigField(cfg) {
     'temperatureSensor', 'lightsMode', 'walkModeDisplay', 'assistStartupLevel',
     'assistModeSelect'
   ];
-  if (!v6) scalars.push('pasKeepCurrentPercent', 'pasKeepCurrentCadenceRpm');
+  scalars.push('pasKeepCurrentPercent', 'pasKeepCurrentCadenceRpm');
 
   for (const key of scalars) {
     if (cfg[key] === null || cfg[key] === undefined || Number.isNaN(cfg[key])) return key;
   }
 
   const levelKeys = v6
-    ? ['maxCurrent', 'minCurrent', 'taperStartCadence', 'taperEndCadence', 'maxThrottle', 'speed', 'torqueAmp']
+    ? ['current', 'targetRpmOffset', 'maxThrottle', 'cadence', 'speed', 'torqueAmp']
     : ['current', 'maxThrottle', 'cadence', 'speed', 'torqueAmp'];
 
   for (const type of ['standardLevels', 'sportLevels']) {
@@ -1600,6 +1840,732 @@ function openWifiModal() {
     setTimeout(fetchFirmwareInfo, 15000);  // refresh the Wi-Fi pill once the join settles
   });
 }
+
+// ---------- Cadence vs Target Current Graph ----------
+let modalCurrentMode = 'std';
+let modalCurrentLevel = 1;
+let activeCursorRpm = null;
+let isPointerDownOnCanvas = false;
+
+function openCadenceGraphModal(modeType, level) {
+  modalCurrentMode = modeType || 'std';
+  modalCurrentLevel = (typeof level === 'number' && level >= 0 && level <= 9) ? level : 1;
+  activeCursorRpm = null;
+  const modal = document.getElementById('cadence-modal');
+  if (modal) modal.classList.add('open');
+  initCadenceLevelSelector();
+  updateCadenceModal();
+}
+
+function closeCadenceGraphModal() {
+  const modal = document.getElementById('cadence-modal');
+  if (modal) modal.classList.remove('open');
+}
+
+function handleModalBackdropClick(e) {
+  if (e.target && e.target.id === 'cadence-modal') {
+    closeCadenceGraphModal();
+  }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeCadenceGraphModal();
+});
+
+function toggleModalMode() {
+  modalCurrentMode = (modalCurrentMode === 'std') ? 'sport' : 'std';
+  updateCadenceModal();
+}
+
+function setModalLevel(lvl) {
+  modalCurrentLevel = lvl;
+  updateCadenceModal();
+}
+
+function initCadenceLevelSelector() {
+  const container = document.getElementById('modal-level-selector');
+  if (!container) return;
+  container.innerHTML = '';
+  for (let i = 0; i < 10; ++i) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'curve-lvl-btn' + (i === modalCurrentLevel ? ' active' : '');
+    btn.textContent = i;
+    btn.onclick = () => setModalLevel(i);
+    container.appendChild(btn);
+  }
+}
+
+function computePasTargetCurrent(cadenceRpm, type, levelIndex) {
+  const arrName = (type === 'sport') ? 'sportLevels' : 'standardLevels';
+  const cfgLvl = activeConfig ? activeConfig[arrName]?.[levelIndex] : null;
+
+  // Max controller current in Amps
+  let maxCurrentAmps = formFloat('cfg-maxCurrent');
+  if (maxCurrentAmps === null || isNaN(maxCurrentAmps)) {
+    maxCurrentAmps = activeConfig?.maxCurrent ?? 30;
+  }
+
+  // PAS enabled flag
+  let pasEnabled = true;
+  const pasEl = document.getElementById(`${type}-pas-${levelIndex}`);
+  if (configLoaded && pasEl) {
+    pasEnabled = pasEl.checked;
+  } else if (cfgLvl && cfgLvl.pas !== undefined) {
+    pasEnabled = cfgLvl.pas;
+  } else {
+    pasEnabled = (levelIndex > 0);
+  }
+
+  const pvEl = document.getElementById(`${type}-pv-${levelIndex}`);
+  const pasVariable = (configLoaded && pvEl) ? pvEl.checked : (cfgLvl?.pasVariable ?? false);
+
+  const ptEl = document.getElementById(`${type}-pt-${levelIndex}`);
+  const pasTorque = (configLoaded && ptEl) ? ptEl.checked : (cfgLvl?.pasTorque ?? false);
+
+  let maxCurPct = 0;
+  let minCurPct = 0;
+  let rampStartRpm = 0;
+  let rampEndRpm = 120;
+  let currentPct = 0;
+  let state = 'Normal';
+
+  // Config v4/v5/v6 all share the same PAS *current* behaviour: the global
+  // keep-current ramp. Config v6 only adds a speed target offset, which does
+  // not change this curve, so the model below is version independent.
+  let rawCur = formInt(`${type}-curr-${levelIndex}`);
+  if (rawCur === null || isNaN(rawCur)) rawCur = cfgLvl?.current ?? (levelIndex === 0 ? 0 : Math.min(100, levelIndex * 15 + 10));
+  maxCurPct = rawCur;
+
+  let rawCad = formInt(`${type}-cad-${levelIndex}`);
+  if (rawCad === null || isNaN(rawCad)) rawCad = cfgLvl?.cadence ?? 100;
+  const maxCadencePct = rawCad;
+
+  let keepCurPct = formInt('cfg-pasKeepCurrentPercent');
+  if (keepCurPct === null || isNaN(keepCurPct)) keepCurPct = activeConfig?.pasKeepCurrentPercent ?? 60;
+
+  let keepCurCadenceRpm = formInt('cfg-pasKeepCurrentCadenceRpm');
+  if (keepCurCadenceRpm === null || isNaN(keepCurCadenceRpm)) keepCurCadenceRpm = activeConfig?.pasKeepCurrentCadenceRpm ?? 70;
+
+  rampStartRpm = keepCurCadenceRpm;
+  const motorMaxCadenceRpm = 120; // Nominal BBSHD max cadence
+  rampEndRpm = Math.round((maxCadencePct * motorMaxCadenceRpm) / 100);
+  minCurPct = Math.round((keepCurPct * maxCurPct) / 100);
+
+  if (!pasEnabled) {
+    currentPct = 0;
+    state = 'PAS Disabled';
+  } else if (pasVariable) {
+    currentPct = maxCurPct;
+    state = 'PAS Variable (Throttle Modulated)';
+  } else if (keepCurPct >= 100 || rampEndRpm <= rampStartRpm) {
+    currentPct = maxCurPct;
+    state = 'Constant Assist';
+  } else {
+    if (cadenceRpm <= rampStartRpm) {
+      currentPct = maxCurPct;
+      state = (cadenceRpm === 0) ? 'Ready (0 RPM)' : 'Target Current';
+    } else if (cadenceRpm >= rampEndRpm) {
+      currentPct = minCurPct;
+      state = 'Keep Current Floor';
+    } else {
+      const span = Math.max(1, rampEndRpm - rampStartRpm);
+      const ratio = (cadenceRpm - rampStartRpm) / span;
+      currentPct = maxCurPct - ratio * (maxCurPct - minCurPct);
+      state = 'Keep Current Ramp Down';
+    }
+  }
+
+  currentPct = Math.max(0, Math.min(100, currentPct));
+  const currentAmps = (currentPct / 100) * maxCurrentAmps;
+
+  return {
+    currentPct,
+    currentAmps,
+    state,
+    maxCurPct,
+    minCurPct,
+    rampStartRpm,
+    rampEndRpm,
+    maxAmps: maxCurrentAmps,
+    pasEnabled,
+    pasVariable,
+    pasTorque
+  };
+}
+
+function updateCadenceModal() {
+  const modeBtn = document.getElementById('modal-mode-btn');
+  if (modeBtn) {
+    modeBtn.textContent = (modalCurrentMode === 'sport') ? 'Sport' : 'Standard';
+    modeBtn.className = 'btn ' + ((modalCurrentMode === 'sport') ? 'btn-danger' : 'btn-secondary');
+  }
+
+  const container = document.getElementById('modal-level-selector');
+  if (container) {
+    container.querySelectorAll('.curve-lvl-btn').forEach((btn, idx) => {
+      btn.classList.toggle('active', idx === modalCurrentLevel);
+    });
+  }
+
+  const params = computePasTargetCurrent(0, modalCurrentMode, modalCurrentLevel);
+
+  document.getElementById('cs-target-max').textContent = `${params.maxCurPct}% (${((params.maxCurPct / 100) * params.maxAmps).toFixed(1)} A)`;
+  document.getElementById('cs-floor').textContent = `${params.minCurPct}% (${((params.minCurPct / 100) * params.maxAmps).toFixed(1)} A)`;
+  document.getElementById('cs-ramp').textContent = `${params.rampStartRpm} → ${params.rampEndRpm} RPM`;
+  document.getElementById('cs-max-amps').textContent = `${params.maxAmps.toFixed(1)} A`;
+
+  const statusEl = document.getElementById('cs-pas-status');
+  if (!params.pasEnabled) {
+    statusEl.textContent = 'Disabled';
+    statusEl.style.color = 'var(--accent-rose)';
+  } else if (params.pasVariable) {
+    statusEl.textContent = 'PAS Variable';
+    statusEl.style.color = 'var(--accent-amber)';
+  } else if (params.pasTorque) {
+    statusEl.textContent = 'Torque Sensor';
+    statusEl.style.color = 'var(--accent-cyan)';
+  } else {
+    statusEl.textContent = 'Active (Cadence)';
+    statusEl.style.color = 'var(--accent-emerald)';
+  }
+
+  if (activeCursorRpm === null) {
+    activeCursorRpm = Math.min(params.rampStartRpm > 0 ? params.rampStartRpm : 60, 140);
+  }
+
+  updateCursorReadout(params);
+  renderCadenceGraph();
+}
+
+function updateCursorReadout(params) {
+  if (!params) params = computePasTargetCurrent(activeCursorRpm || 0, modalCurrentMode, modalCurrentLevel);
+  const cur = computePasTargetCurrent(activeCursorRpm || 0, modalCurrentMode, modalCurrentLevel);
+
+  document.getElementById('cursor-cadence').textContent = (activeCursorRpm !== null ? activeCursorRpm.toFixed(1) : '--') + ' RPM';
+  document.getElementById('cursor-current').textContent = `${cur.currentPct.toFixed(1)} % (${cur.currentAmps.toFixed(2)} A)`;
+  const stateBadge = document.getElementById('cursor-state');
+  stateBadge.textContent = cur.state;
+  stateBadge.className = 'badge ' + (!cur.pasEnabled ? 'badge-error' : (cur.state.includes('Floor') ? 'badge-warning' : 'badge-active'));
+}
+
+function renderCadenceGraph() {
+  const canvas = document.getElementById('cadence-canvas');
+  if (!canvas) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const w = rect.width > 0 ? rect.width : (canvas.parentElement ? canvas.parentElement.clientWidth - 16 : 640);
+  const h = 280;
+
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+  }
+
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const marginLeft = 44;
+  const marginRight = 44;
+  const marginTop = 20;
+  const marginBottom = 34;
+
+  const plotWidth = Math.max(10, w - marginLeft - marginRight);
+  const plotHeight = Math.max(10, h - marginTop - marginBottom);
+
+  const sampleAtZero = computePasTargetCurrent(0, modalCurrentMode, modalCurrentLevel);
+  const maxRpm = Math.max(140, Math.ceil((sampleAtZero.rampEndRpm + 20) / 20) * 20);
+
+  // Background Grid Lines
+  ctx.strokeStyle = 'rgba(51, 65, 85, 0.45)';
+  ctx.lineWidth = 1;
+
+  // Horizontal Grid Lines (0%, 20%, 40%, 60%, 80%, 100%)
+  ctx.font = '10px -apple-system, BlinkMacSystemFont, sans-serif';
+  for (let pct = 0; pct <= 100; pct += 20) {
+    const y = marginTop + plotHeight - (pct / 100) * plotHeight;
+    ctx.beginPath();
+    ctx.moveTo(marginLeft, y);
+    ctx.lineTo(marginLeft + plotWidth, y);
+    ctx.stroke();
+
+    // Left Y-axis label (Percent)
+    ctx.fillStyle = '#94a3b8';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(pct + '%', marginLeft - 6, y);
+
+    // Right Y-axis label (Amps)
+    const amps = ((pct / 100) * sampleAtZero.maxAmps).toFixed(1);
+    ctx.fillStyle = '#10b981';
+    ctx.textAlign = 'left';
+    ctx.fillText(amps + 'A', marginLeft + plotWidth + 6, y);
+  }
+
+  // Vertical Grid Lines
+  const rpmStep = maxRpm > 160 ? 40 : 20;
+  for (let rpm = 0; rpm <= maxRpm; rpm += rpmStep) {
+    const x = marginLeft + (rpm / maxRpm) * plotWidth;
+    ctx.beginPath();
+    ctx.moveTo(x, marginTop);
+    ctx.lineTo(x, marginTop + plotHeight);
+    ctx.stroke();
+
+    // X-axis label
+    ctx.fillStyle = '#94a3b8';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(rpm + (rpm === maxRpm ? ' RPM' : ''), x, marginTop + plotHeight + 6);
+  }
+
+  // Axis Titles
+  ctx.fillStyle = '#64748b';
+  ctx.font = '10px -apple-system, BlinkMacSystemFont, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText('Target Current % (Left) / Amps (Right)', marginLeft, marginTop - 6);
+
+  ctx.textAlign = 'center';
+  ctx.fillText('Pedal Cadence (RPM)', marginLeft + plotWidth / 2, h - 2);
+
+  // Taper / Ramp Markers
+  if (sampleAtZero.pasEnabled && sampleAtZero.rampStartRpm > 0 && sampleAtZero.rampStartRpm < maxRpm) {
+    const xStart = marginLeft + (sampleAtZero.rampStartRpm / maxRpm) * plotWidth;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(245, 158, 11, 0.7)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(xStart, marginTop);
+    ctx.lineTo(xStart, marginTop + plotHeight);
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.fillStyle = '#f59e0b';
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Taper Start (' + sampleAtZero.rampStartRpm + ')', xStart, marginTop + 12);
+  }
+
+  if (sampleAtZero.pasEnabled && sampleAtZero.rampEndRpm > 0 && sampleAtZero.rampEndRpm <= maxRpm && sampleAtZero.rampEndRpm !== sampleAtZero.rampStartRpm) {
+    const xEnd = marginLeft + (sampleAtZero.rampEndRpm / maxRpm) * plotWidth;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.7)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(xEnd, marginTop);
+    ctx.lineTo(xEnd, marginTop + plotHeight);
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Taper End (' + sampleAtZero.rampEndRpm + ')', xEnd, marginTop + 24);
+  }
+
+  // Generate Curve Points
+  const points = [];
+  const numSteps = 200;
+  for (let i = 0; i <= numSteps; ++i) {
+    const rpm = (i / numSteps) * maxRpm;
+    const res = computePasTargetCurrent(rpm, modalCurrentMode, modalCurrentLevel);
+    const x = marginLeft + (rpm / maxRpm) * plotWidth;
+    const y = marginTop + plotHeight - (res.currentPct / 100) * plotHeight;
+    points.push({ x, y, rpm, res });
+  }
+
+  // Draw Gradient Area Under Curve
+  if (points.length > 1) {
+    const grad = ctx.createLinearGradient(0, marginTop, 0, marginTop + plotHeight);
+    grad.addColorStop(0, 'rgba(6, 182, 212, 0.35)');
+    grad.addColorStop(1, 'rgba(6, 182, 212, 0.02)');
+
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, marginTop + plotHeight);
+    ctx.lineTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; ++i) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.lineTo(points[points.length - 1].x, marginTop + plotHeight);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // Draw Main Curve Stroke
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; ++i) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.strokeStyle = sampleAtZero.pasEnabled ? '#06b6d4' : '#64748b';
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  }
+
+  // Draw Live Telemetry Position Marker
+  if (latestTelemetry && latestTelemetry.hasTargetTelemetry === true) {
+    const liveCad = parseFloat(latestTelemetry.cadenceRpm) || 0;
+    const liveTgt = parseFloat(latestTelemetry.targetCurrentPercent) || 0;
+    if (liveCad >= 0 && liveCad <= maxRpm) {
+      const liveX = marginLeft + (liveCad / maxRpm) * plotWidth;
+      const liveY = marginTop + plotHeight - (Math.min(100, Math.max(0, liveTgt)) / 100) * plotHeight;
+
+      ctx.beginPath();
+      ctx.arc(liveX, liveY, 9, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(16, 185, 129, 0.25)';
+      ctx.fill();
+      ctx.strokeStyle = '#10b981';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(liveX, liveY, 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#10b981';
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      ctx.font = 'bold 9px sans-serif';
+      ctx.fillStyle = '#10b981';
+      ctx.textAlign = 'center';
+      const tagY = liveY < marginTop + 20 ? liveY + 16 : liveY - 12;
+      ctx.fillText('LIVE (' + liveCad.toFixed(0) + ' RPM)', liveX, tagY);
+    }
+  }
+
+  // Interactive Cursor
+  if (activeCursorRpm !== null) {
+    const clampedRpm = Math.max(0, Math.min(maxRpm, activeCursorRpm));
+    const curRes = computePasTargetCurrent(clampedRpm, modalCurrentMode, modalCurrentLevel);
+    const curX = marginLeft + (clampedRpm / maxRpm) * plotWidth;
+    const curY = marginTop + plotHeight - (curRes.currentPct / 100) * plotHeight;
+
+    // Vertical Cursor Line
+    ctx.strokeStyle = 'rgba(248, 250, 252, 0.6)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(curX, marginTop);
+    ctx.lineTo(curX, marginTop + plotHeight);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Highlight Point Dot
+    ctx.beginPath();
+    ctx.arc(curX, curY, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#06b6d4';
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Small On-Graph Tooltip Callout
+    const tooltipText = `${clampedRpm.toFixed(0)} RPM: ${curRes.currentPct.toFixed(1)}% (${curRes.currentAmps.toFixed(1)}A)`;
+    ctx.font = 'bold 11px -apple-system, BlinkMacSystemFont, sans-serif';
+    const textWidth = ctx.measureText(tooltipText).width;
+    const boxW = textWidth + 16;
+    const boxH = 22;
+    let boxX = curX + 10;
+    if (boxX + boxW > marginLeft + plotWidth) boxX = curX - boxW - 10;
+    let boxY = curY - 15;
+    if (boxY < marginTop) boxY = marginTop + 4;
+    if (boxY + boxH > marginTop + plotHeight) boxY = marginTop + plotHeight - boxH;
+
+    ctx.fillStyle = 'rgba(11, 17, 32, 0.9)';
+    ctx.strokeStyle = 'rgba(6, 182, 212, 0.8)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    if (ctx.roundRect) {
+      ctx.roundRect(boxX, boxY, boxW, boxH, 4);
+    } else {
+      ctx.rect(boxX, boxY, boxW, boxH);
+    }
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#f8fafc';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(tooltipText, boxX + 8, boxY + boxH / 2);
+  }
+}
+
+// Render the Live Cadence & Target Current Graph on the Dashboard card
+function renderDashCadenceGraph() {
+  const canvas = document.getElementById('dash-cadence-canvas');
+  if (!canvas) return;
+
+  const modeType = (currentMode === 1) ? 'sport' : 'std';
+  const modeName = (currentMode === 1) ? 'Sport' : 'Standard';
+
+  const badge = document.getElementById('dash-pas-badge');
+  if (badge) badge.textContent = `PAS ${currentPas} (${modeName})`;
+
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const w = rect.width > 0 ? rect.width : (canvas.parentElement ? canvas.parentElement.clientWidth - 16 : 600);
+  const h = 200;
+
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+  }
+
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const marginLeft = 38;
+  const marginRight = 38;
+  const marginTop = 16;
+  const marginBottom = 28;
+
+  const plotWidth = Math.max(10, w - marginLeft - marginRight);
+  const plotHeight = Math.max(10, h - marginTop - marginBottom);
+
+  const sampleAtZero = computePasTargetCurrent(0, modeType, currentPas);
+  const maxRpm = Math.max(140, Math.ceil((sampleAtZero.rampEndRpm + 20) / 20) * 20);
+
+  // Background Grid Lines
+  ctx.strokeStyle = 'rgba(51, 65, 85, 0.35)';
+  ctx.lineWidth = 1;
+
+  // Horizontal Grid Lines (0%, 50%, 100%)
+  ctx.font = '10px -apple-system, BlinkMacSystemFont, sans-serif';
+  for (let pct = 0; pct <= 100; pct += 50) {
+    const y = marginTop + plotHeight - (pct / 100) * plotHeight;
+    ctx.beginPath();
+    ctx.moveTo(marginLeft, y);
+    ctx.lineTo(marginLeft + plotWidth, y);
+    ctx.stroke();
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(pct + '%', marginLeft - 4, y);
+
+    const amps = ((pct / 100) * sampleAtZero.maxAmps).toFixed(1);
+    ctx.fillStyle = '#10b981';
+    ctx.textAlign = 'left';
+    ctx.fillText(amps + 'A', marginLeft + plotWidth + 4, y);
+  }
+
+  // Vertical Grid Lines
+  for (let rpm = 0; rpm <= maxRpm; rpm += 40) {
+    const x = marginLeft + (rpm / maxRpm) * plotWidth;
+    ctx.beginPath();
+    ctx.moveTo(x, marginTop);
+    ctx.lineTo(x, marginTop + plotHeight);
+    ctx.stroke();
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(rpm + (rpm === maxRpm ? ' RPM' : ''), x, marginTop + plotHeight + 4);
+  }
+
+  // Taper/Ramp Dashed Vertical Lines
+  if (sampleAtZero.pasEnabled && sampleAtZero.rampStartRpm > 0 && sampleAtZero.rampStartRpm < maxRpm) {
+    const xStart = marginLeft + (sampleAtZero.rampStartRpm / maxRpm) * plotWidth;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(245, 158, 11, 0.6)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(xStart, marginTop);
+    ctx.lineTo(xStart, marginTop + plotHeight);
+    ctx.stroke();
+    ctx.restore();
+  }
+  if (sampleAtZero.pasEnabled && sampleAtZero.rampEndRpm > 0 && sampleAtZero.rampEndRpm <= maxRpm && sampleAtZero.rampEndRpm !== sampleAtZero.rampStartRpm) {
+    const xEnd = marginLeft + (sampleAtZero.rampEndRpm / maxRpm) * plotWidth;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.6)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(xEnd, marginTop);
+    ctx.lineTo(xEnd, marginTop + plotHeight);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Generate Curve Points
+  const points = [];
+  const numSteps = 150;
+  for (let i = 0; i <= numSteps; ++i) {
+    const rpm = (i / numSteps) * maxRpm;
+    const res = computePasTargetCurrent(rpm, modeType, currentPas);
+    const x = marginLeft + (rpm / maxRpm) * plotWidth;
+    const y = marginTop + plotHeight - (res.currentPct / 100) * plotHeight;
+    points.push({ x, y });
+  }
+
+  if (points.length > 1) {
+    const grad = ctx.createLinearGradient(0, marginTop, 0, marginTop + plotHeight);
+    grad.addColorStop(0, 'rgba(6, 182, 212, 0.3)');
+    grad.addColorStop(1, 'rgba(6, 182, 212, 0.01)');
+
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, marginTop + plotHeight);
+    ctx.lineTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; ++i) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.lineTo(points[points.length - 1].x, marginTop + plotHeight);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; ++i) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.strokeStyle = sampleAtZero.pasEnabled ? '#06b6d4' : '#64748b';
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  }
+
+  // Live Position Plotting
+  const hasTargets = (latestTelemetry && latestTelemetry.hasTargetTelemetry === true);
+  const liveCadEl = document.getElementById('dash-live-cadence');
+  const liveTgtEl = document.getElementById('dash-live-target');
+  const liveStEl = document.getElementById('dash-live-state');
+
+  if (hasTargets) {
+    const liveCad = parseFloat(latestTelemetry.cadenceRpm) || 0;
+    const liveTgt = parseFloat(latestTelemetry.targetCurrentPercent) || 0;
+    const liveAmps = (liveTgt / 100) * sampleAtZero.maxAmps;
+
+    if (liveCadEl) liveCadEl.textContent = liveCad.toFixed(1) + ' RPM';
+    if (liveTgtEl) liveTgtEl.textContent = `${liveTgt.toFixed(0)} % (${liveAmps.toFixed(1)} A)`;
+    if (liveStEl) {
+      liveStEl.textContent = (liveTgt > 0) ? `Assist Active (${liveTgt.toFixed(0)}%)` : (liveCad > 0 ? 'Pedaling' : 'Coast / Idle');
+      liveStEl.className = 'badge ' + (liveTgt > 0 ? 'badge-active' : 'badge-neutral');
+    }
+
+    if (liveCad >= 0 && liveCad <= maxRpm) {
+      const liveX = marginLeft + (liveCad / maxRpm) * plotWidth;
+      const liveY = marginTop + plotHeight - (Math.min(100, Math.max(0, liveTgt)) / 100) * plotHeight;
+
+      // Glow Halo
+      ctx.beginPath();
+      ctx.arc(liveX, liveY, 9, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(16, 185, 129, 0.35)';
+      ctx.fill();
+      ctx.strokeStyle = '#10b981';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Dot
+      ctx.beginPath();
+      ctx.arc(liveX, liveY, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#10b981';
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Callout tag
+      ctx.font = 'bold 9px sans-serif';
+      ctx.fillStyle = '#10b981';
+      ctx.textAlign = 'center';
+      const tagY = liveY < marginTop + 20 ? liveY + 16 : liveY - 12;
+      ctx.fillText(`${liveCad.toFixed(0)} RPM / ${liveTgt.toFixed(0)}%`, liveX, tagY);
+    }
+  } else {
+    if (liveCadEl) liveCadEl.textContent = '-- RPM';
+    if (liveTgtEl) liveTgtEl.textContent = '-- % (-- A)';
+    if (liveStEl) {
+      liveStEl.textContent = 'waiting for telemetry';
+      liveStEl.className = 'badge badge-neutral';
+    }
+  }
+}
+
+function setupCadenceCanvasEvents() {
+  const modalCanvas = document.getElementById('cadence-canvas');
+  if (modalCanvas) {
+    function handlePointer(e) {
+      const rect = modalCanvas.getBoundingClientRect();
+      const clientX = (e.touches && e.touches.length > 0) ? e.touches[0].clientX : e.clientX;
+      const marginLeft = 44;
+      const plotWidth = rect.width - 88;
+      if (plotWidth <= 0) return;
+
+      const sampleAtZero = computePasTargetCurrent(0, modalCurrentMode, modalCurrentLevel);
+      const maxRpm = Math.max(140, Math.ceil((sampleAtZero.rampEndRpm + 20) / 20) * 20);
+
+      const relativeX = clientX - rect.left - marginLeft;
+      const fraction = Math.max(0, Math.min(1, relativeX / plotWidth));
+      activeCursorRpm = fraction * maxRpm;
+
+      updateCursorReadout();
+      renderCadenceGraph();
+    }
+
+    modalCanvas.addEventListener('pointerdown', e => {
+      isPointerDownOnCanvas = true;
+      try { modalCanvas.setPointerCapture(e.pointerId); } catch(err){}
+      handlePointer(e);
+    });
+
+    modalCanvas.addEventListener('pointermove', e => {
+      if (isPointerDownOnCanvas || e.pointerType === 'mouse') {
+        handlePointer(e);
+      }
+    });
+
+    modalCanvas.addEventListener('pointerup', e => {
+      isPointerDownOnCanvas = false;
+      try { modalCanvas.releasePointerCapture(e.pointerId); } catch(err){}
+    });
+
+    modalCanvas.addEventListener('pointercancel', () => {
+      isPointerDownOnCanvas = false;
+    });
+  }
+
+  const dashCanvas = document.getElementById('dash-cadence-canvas');
+  if (dashCanvas) {
+    dashCanvas.addEventListener('click', e => {
+      const rect = dashCanvas.getBoundingClientRect();
+      const marginLeft = 38;
+      const plotWidth = rect.width - 76;
+      const sampleAtZero = computePasTargetCurrent(0, currentMode === 1 ? 'sport' : 'std', currentPas);
+      const maxRpm = Math.max(140, Math.ceil((sampleAtZero.rampEndRpm + 20) / 20) * 20);
+
+      const relativeX = e.clientX - rect.left - marginLeft;
+      const fraction = Math.max(0, Math.min(1, relativeX / plotWidth));
+      const targetRpm = fraction * maxRpm;
+
+      openCadenceGraphModal(currentMode === 1 ? 'sport' : 'std', currentPas);
+      activeCursorRpm = targetRpm;
+      updateCursorReadout();
+      renderCadenceGraph();
+    });
+  }
+
+  window.addEventListener('resize', () => {
+    renderDashCadenceGraph();
+    const modal = document.getElementById('cadence-modal');
+    if (modal && modal.classList.contains('open')) {
+      renderCadenceGraph();
+    }
+  });
+}
+setupCadenceCanvasEvents();
+setTimeout(fetchConfigFromController, 100);
+setTimeout(renderDashCadenceGraph, 300);
 </script>
 </body>
 </html>

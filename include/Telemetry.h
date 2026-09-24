@@ -34,7 +34,8 @@ public:
     void updateLights(bool on);
     void updateStatusCode(uint8_t code);
     void updateTemperature(int8_t controllerC, int8_t motorC);
-    void updateTargetTelemetry(uint8_t targetCurrentPercent, uint8_t targetSpeedPercent, uint16_t cadenceRpmX10, uint16_t motorRpmX10);
+    void updateTargetTelemetry(uint8_t targetCurrentPercent, uint8_t targetSpeedPercent,
+                               uint16_t cadenceRpmX10, uint16_t motorRpmX10);
     void updateFirmwareInfo(uint8_t major, uint8_t minor, uint8_t patch, uint8_t cfgVer, ControllerType type);
 
     // Activity tracking
@@ -61,6 +62,7 @@ public:
     // Check connectivity
     bool isDisplayActive() const;
     bool isControllerActive() const;
+    bool hasTargetTelemetry() const;
 
     // JSON builders for Web API
     void buildTelemetryJson(JsonDocument& doc);
@@ -87,6 +89,7 @@ private:
 
     // Live bbs-fw motor targets (from the 0xEC debug telemetry frame)
     bool _hasTargetTelemetry;
+    uint32_t _lastTargetTelemetryMs;
     uint8_t _targetCurrentPercent;
     uint8_t _targetSpeedPercent;
     uint16_t _cadenceRpmX10;

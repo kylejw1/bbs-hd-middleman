@@ -101,15 +101,34 @@ $$\text{Checksum} = \left( \sum_{i=0}^{N-1} \text{byte}_i \right) \pmod{256}$$
 The fork's `app_process()` periodically (every `DEBUG_TELEMETRY_INTERVAL_MS`, 500 ms) calls `eventlog_write_telemetry()` so the middleman can display live motor targets that the display protocol never exposes:
 
 ```
-0xEC, target_current_percent, target_speed_percent, cadence_rpm_x10_hi, cadence_rpm_x10_lo, motor_rpm_x10_hi, motor_rpm_x10_lo, checksum
+0xEC, target_current_percent, target_speed_percent,
+     cadence_rpm_x10_hi, cadence_rpm_x10_lo,
+     motor_rpm_x10_hi, motor_rpm_x10_lo,
+     rider_torque_dnm_hi, rider_torque_dnm_lo,
+     load_bias_dnm_hi, load_bias_dnm_lo,
+     load_flags, checksum
 ```
+Thirteen bytes including the checksum. It grew from eight when the virtual load
+sensing estimator was added; at the 500 ms emit interval it occupies about 11% of
+the 1200 baud controller<->display link.
+
+* `rider_torque_dnm` is the estimated torque the rider is actually transmitting
+  through the crank clutch, in Nm x10, signed. This is the virtual torque sensor
+  output; see `bbs-fw/src/firmware/loadsensor.h` for the full derivation.
+* `load_bias_dnm` is the identified grade/rolling load bias the estimate is
+  derived against, Nm x10, signed. Useful for checking the model against a known
+  road.
+* `load_flags` carries `LOAD_FLAG_*` (see `BbsFwProtocol.h`) plus a 2 bit
+  confidence field in bits 5-6. Confidence 0 means no coast has been observed
+  since power-on, so the load reference is still a nominal prior and the reading
+  must not be trusted on a climb.
 
 * `target_current_percent` / `target_speed_percent` are the final `motor_set_target_current()` / `motor_set_target_speed()` values (0–100).
 * `cadence_rpm_x10` is `pas_get_cadence_rpm_x10()` (pedal cadence × 10).
 * `motor_rpm_x10` is `hall_get_motor_rpm_x10()`: the motor output shaft speed × 10, measured from the three motor hall signals, which are wired to both the NEC motor controller and the STC. It is reported in output shaft (chainring / crank equivalent) rpm so it is directly comparable to the pedal cadence, and reads zero when the motor is not turning or on controllers whose hall routing has not been traced.
 * Checksum is the usual 8-bit sum over the first seven bytes.
 * It is only emitted while the event log is enabled (the middleman enables it at boot via `enableEventLog(true)`).
-* The middleman parses it in both bridge paths — `processControllerRxPassThrough()` and `consumeControllerEventFrame()` — updates `TelemetryTracker::updateTargetTelemetry()`, and **swallows** it like the other event frames (never forwarded to the display). `/api/telemetry` exposes `hasTargetTelemetry`, `targetCurrentPercent`, `targetSpeedPercent`, `cadenceRpm` and `motorRpm`, which the dashboard "Motor Targets (bbs-fw)" card renders.
+* The middleman parses it in both bridge paths — `processControllerRxPassThrough()` and `consumeControllerEventFrame()` — updates `TelemetryTracker::updateTargetTelemetry()`, and **swallows** it like the other event frames (never forwarded to the display). `/api/telemetry` exposes `hasTargetTelemetry`, `targetCurrentPercent`, `targetSpeedPercent`, `cadenceRpm`, `motorRpm`, `riderTorqueNm`, `loadBiasNm`, `loadValid`, `loadConfidence`, `loadClutchLocked`, `loadAnchored` and `loadSaturated`, which the dashboard "Motor Targets (bbs-fw)" card renders.
 
 ### Binary Configuration Struct Layout (Version 5, 154 Bytes)
 Defined in [`include/BbsFwProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/include/BbsFwProtocol.h):

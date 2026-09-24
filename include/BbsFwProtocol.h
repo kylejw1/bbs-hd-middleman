@@ -46,6 +46,8 @@ constexpr uint8_t EVENT_LOG_ENTRY               = 0xee;
 constexpr uint8_t EVENT_LOG_DATA_ENTRY          = 0xed;
 // Multi-value debug telemetry (bbs-fw 0xEC): header, target current %,
 // target speed %, cadence rpm x10 (hi/lo), motor rpm x10 (hi/lo), checksum.
+// The virtual load sensor torque/bias/flags that briefly extended this frame
+// were removed from the firmware, so it is back to 8 bytes.
 constexpr uint8_t EVENT_LOG_TELEMETRY_ENTRY     = 0xec;
 constexpr size_t  EVENT_LOG_TELEMETRY_SIZE      = 8;
 
@@ -57,13 +59,12 @@ constexpr uint8_t ASSIST_FLAG_PAS_VARIABLE      = 0x08;
 constexpr uint8_t ASSIST_FLAG_PAS_TORQUE        = 0x10;
 constexpr uint8_t ASSIST_FLAG_OVERRIDE_CADENCE  = 0x20;
 constexpr uint8_t ASSIST_FLAG_OVERRIDE_SPEED    = 0x40;
-constexpr uint8_t ASSIST_FLAG_DISPLAY_TARGET_CURRENT = 0x80;  // v6: show target current on display
 
 // Config sizes / wire versions
 constexpr uint8_t BBS_FW_CONFIG_VERSION         = 5;
 constexpr size_t  BBS_FW_CONFIG_V5_SIZE         = 154;
 constexpr uint8_t BBS_FW_CONFIG_VERSION_6       = 6;
-constexpr size_t  BBS_FW_CONFIG_V6_SIZE         = 192;
+constexpr size_t  BBS_FW_CONFIG_V6_SIZE         = 174;
 constexpr uint8_t BBS_FW_CONFIG_VERSION_4       = 4;
 constexpr size_t  BBS_FW_CONFIG_V4_SIZE         = 152;
 
@@ -193,23 +194,24 @@ struct BbsFwConfigV4 {
     AssistLevel sport_levels[10];
 };
 
-// Config version 6 (bbs-fw fork, "per-assist-level PAS min current and cadence
-// taper, display target current"). It is NOT a superset of v5:
-//   * the global `pas_keep_current_percent` / `pas_keep_current_cadence_rpm`
-//     header fields are gone (folded into the per-level min current + taper),
-//   * each assist level grew from 6 to 8 bytes.
-// Total size: 32-byte header + 2 * 10 * 8 = 192 bytes.
+// Config version 6 (bbs-fw fork): identical to version 5 except that each
+// assist level carries one extra trailing byte, `target_rpm_offset`. That is an
+// offset in rpm added to the measured pedal cadence when the firmware derives
+// the variable PAS speed target, so the motor may run ahead of the rider's
+// legs. 0 disables the offset.
+// Total size: 34-byte header + 2 * 10 * 7 = 174 bytes.
 struct AssistLevelV6 {
     uint8_t flags;
-    uint8_t max_current_percent;             // target current before taper
-    uint8_t min_current_percent;             // current floor after taper
-    uint8_t taper_start_cadence_rpm;         // taper begins at this cadence
-    uint8_t taper_end_cadence_rpm;           // taper reaches min current here
+    uint8_t target_current_percent;
     uint8_t max_throttle_current_percent;
+    uint8_t max_cadence_percent;
     uint8_t max_speed_percent;
     uint8_t torque_amplification_factor_x10;
+    uint8_t target_rpm_offset;               // rpm added to the PAS speed target
 };
 
+// NOTE: the header fields below must stay byte-for-byte identical to
+// BbsFwConfigV5, and in the same order. Only the level type differs.
 struct BbsFwConfigV6 {
     // Units
     uint8_t use_freedom_units;
@@ -236,9 +238,11 @@ struct BbsFwConfigV6 {
     uint8_t wheel_size_inch_x10_u16h;
     uint8_t speed_sensor_signals;
 
-    // Pedal Assist (PAS) — note: no global keep-current fields in v6
+    // Pedal Assist (PAS)
     uint8_t pas_start_delay_pulses;
     uint8_t pas_stop_delay_x100s;
+    uint8_t pas_keep_current_percent;
+    uint8_t pas_keep_current_cadence_rpm;
 
     // Throttle
     uint8_t throttle_start_voltage_mv_u16l;
