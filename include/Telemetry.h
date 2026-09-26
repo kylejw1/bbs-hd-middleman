@@ -49,6 +49,11 @@ public:
     // Event Log
     void addEvent(uint8_t eventId, int16_t data, bool hasData);
 
+    // Monotonic count of every event ever recorded (not capped like the ring
+    // buffer). Lets the BLE transport push the log only when it actually
+    // changed instead of re-sending it on a timer.
+    uint32_t getEventSeq() const;
+
     // Getters for display mock synthesizer
     uint8_t getCachedStatusCode() const;
     uint8_t getCachedBatteryPercent() const;
@@ -118,6 +123,7 @@ private:
     EventLogItem _events[MAX_EVENT_LOG_ENTRIES];
     size_t _eventHead;
     size_t _eventCount;
+    uint32_t _eventSeq;  // total events ever recorded, never wraps in practice
 
     void recalculateSpeed();
 };

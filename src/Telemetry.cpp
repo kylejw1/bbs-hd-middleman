@@ -39,6 +39,7 @@ TelemetryTracker::TelemetryTracker()
     , _interceptedPackets(0)
     , _eventHead(0)
     , _eventCount(0)
+    , _eventSeq(0)
 {
 }
 
@@ -194,8 +195,18 @@ void TelemetryTracker::addEvent(uint8_t eventId, int16_t data, bool hasData) {
         if (_eventCount < MAX_EVENT_LOG_ENTRIES) {
             _eventCount++;
         }
+        _eventSeq++;
         xSemaphoreGive(_mutex);
     }
+}
+
+uint32_t TelemetryTracker::getEventSeq() const {
+    uint32_t seq = 0;
+    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        seq = _eventSeq;
+        xSemaphoreGive(_mutex);
+    }
+    return seq;
 }
 
 uint8_t TelemetryTracker::getCachedStatusCode() const {

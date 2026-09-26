@@ -190,6 +190,24 @@ CONTROLLER_TX -> 18 -| [11]                             [34] |- GPIO 37
 * **Voltage Calibration**: Grab a digital multimeter, check your battery pack voltage at the charge port, type the reading into the calibration box, and hit **"Calibrate"**. The middleman syncs the controller's internal ADC in EEPROM.
 * **Backup & Restore**: Export your customized tuning as a `.json` file to share with other riders or keep as a backup before experimenting.
 
+### 4. Using the Hosted Dashboard over Bluetooth (no Wi-Fi needed)
+
+The dashboard above is served *by the middleman itself*, so it already works with no internet and no router — you just have to join the bike's own Wi-Fi. If you would rather keep your phone on its normal network, use the hosted copy instead:
+
+1. Open **https://kylejw1.github.io/bbs-hd-middleman/** in **Chrome** (Android, or desktop Chrome/Edge).
+2. Tap **Bluetooth** in the header and pick **BBSHD-Middleman** from the browser's device list.
+3. The page is now talking to the bike over Bluetooth LE. Add it to your home screen and it keeps working with no network at all — the app shell is cached on first visit.
+
+Notes and limits:
+
+* **Chromium only.** Safari on iOS has no Web Bluetooth, so iPhones must use the on-device Wi-Fi dashboard from step 2 above. That copy is always available and is never going away.
+* The browser remembers the device, so a revisit reconnects on its own. If it does not, tap **Bluetooth** again.
+* Bluetooth and the SoftAP share the ESP32's single radio. Bluetooth is meant to replace the Wi-Fi dashboard, not to run alongside it under heavy polling.
+* **Firmware updates are the one exception.** A `.bin` is far too large for the Bluetooth link, and a secure page cannot talk to the device's plain-HTTP address, so the hosted copy's Firmware tab just tells you where to go. To flash, join `BBS-FW-Middleman` and open `http://192.168.4.1/` (or `http://bbshd.local/` if the middleman is on your home network) and upload from there.
+* **Set a Bluetooth PIN.** Out of the box the Bluetooth API is open, which means anyone within radio range could change your settings. Click **BT PIN** in the header and choose something 4–16 characters; the page remembers it and sends it automatically from then on. If you ever forget it, the Wi-Fi page is never gated — reconnect the normal way and set a new one (this is why the header has two buttons and not one).
+* The page checks the device's Bluetooth protocol version before connecting, so a newer hosted page will refuse to talk to firmware it does not understand rather than misbehave.
+* The hosted page is a convenience: everything it can do, the on-device page can also do.
+
 ---
 
 ## Troubleshooting & FAQ
@@ -206,4 +224,7 @@ CONTROLLER_TX -> 18 -| [11]                             [34] |- GPIO 37
 * Ensure Pin 3 (Blue wire) is passed directly from the display to the controller; without Pin 3, the display cannot wake up the controller.
 
 #### Can I connect the ESP32 to my home Wi-Fi?
-* Yes! In the top-right corner of the web interface, click the **"Wi-Fi"** button, type your home Wi-Fi SSID and password, and submit. When you're parked in your garage or yard, the middleman will connect to your home Wi-Fi while still keeping its portable Access Point active.
+* Yes! In the top-right corner of the web interface, click the **"Wi-Fi"** button, type your home Wi-Fi SSID and password, and submit. Once the join succeeds the middleman stays on your home network at `http://bbshd.local/` and turns its own access point off, because the ESP32's single radio handles either job well but both at once poorly. If the join fails, the fallback access point comes back automatically.
+
+#### Does the dashboard need an internet connection?
+* No. The page, its CSS and its JavaScript are all compiled into the ESP32 and served from it, with no CDN or external request of any kind. There is nothing to load from the internet, which is why it works in the middle of nowhere. The only optional internet-dependent piece is the hosted Bluetooth copy described in step 4 above, and even that works offline after the first visit.

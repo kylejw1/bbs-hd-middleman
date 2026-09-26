@@ -8,6 +8,7 @@
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include "Config.h"
+#include "ApiHandlers.h"
 #include "BbsFwProtocol.h"
 #include "Telemetry.h"
 #include "SerialBridge.h"
@@ -20,6 +21,18 @@ public:
 
     void begin();
     void process();
+
+    // Transport-neutral API entry point. The HTTP routes and the BLE GATT
+    // transport both call this, so a route can never behave differently between
+    // the two. Returns false when the path/method pair is not a known route.
+    bool dispatchApi(const ApiRequest& req, ApiResponse& out);
+
+    // Bluetooth PIN. The BLE transport enforces it (see BlePortal); the Wi-Fi
+    // page deliberately does not, because reaching it already requires being on
+    // the bike's own network or access point -- and that is the recovery path if
+    // the PIN is ever forgotten. An empty PIN means the BLE API is open.
+    String getBlePin() const;
+    void setBlePin(const String& pin);
 
 private:
     // Wi-Fi lifecycle. The device prefers the configured router (STA) and only
@@ -39,6 +52,9 @@ private:
     String _staPass;
     bool _staConfigured;
 
+    // Bluetooth PIN, mirrored in NVS under "ble_pin".
+    String _blePin;
+
     WifiPhase _wifiPhase;
     bool _apActive;
     bool _mdnsStarted;
@@ -47,6 +63,16 @@ private:
     uint32_t _scanStartMs;
     uint32_t _staDownSinceMs;
     uint32_t _pendingStaConnectMs;
+
+    // API capture sink. The HTTP handlers never touch _server for an API reply;
+    // they call sendApi(). While the BLE transport dispatches a request these
+    // point at an ApiResponse instead, which lets one handler implementation
+    // serve both transports byte-for-byte. Cleared again before process()
+    // touches the HTTP server, so a capture can never leak between requests.
+    ApiResponse* _apiOut = nullptr;
+    const String* _apiBody = nullptr;
+    bool _apiIsPost = false;
+    uint32_t _apiAfterSeq = 0;
 
     void setupRoutes();
     void setupWifi();
@@ -74,9 +100,18 @@ private:
     void handleInfo();
     void handleSerialTrace();
     void handleDebugConfig();
+    void handleBlePin();
     void handleOtaComplete();
     void handleOtaUpload();
     void handleNotFound();
+
+    // HTTP-side glue: fills an ApiRequest from the live WebServer request and
+    // writes the ApiResponse back out.
+    void serveApi(const ApiRequest& req);
+
+    // Response sink shared by both transports. With _apiOut set the reply is
+    // captured; otherwise it goes straight to the HTTP client.
+    void sendApi(int status, const char* contentType, const String& body);
 };
 
 extern WebPortal Portal;

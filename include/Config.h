@@ -89,4 +89,46 @@
 // Firmware version string (displayed in web UI and used for OTA validation)
 #define FW_VERSION              "1.0.1"
 
+// =============================================================================
+// BLUETOOTH LE TRANSPORT
+// =============================================================================
+// The dashboard is normally served by the ESP32 itself, over its SoftAP or your
+// LAN, and that copy needs no Bluetooth at all. But a page loaded over HTTPS
+// cannot reach http://192.168.4.1 (mixed content), and Web Bluetooth requires a
+// secure context the ESP32 cannot provide -- so the GitHub Pages copy of the
+// dashboard talks to the bike over BLE GATT instead.
+//
+// That BLE link is a convenience, never a replacement: the on-device copy is
+// what keeps working on iOS Safari, where Web Bluetooth does not exist.
+//
+// Set to 0 to build without Bluedroid (saves roughly 700 KB flash / 60 KB RAM).
+#define BLE_TRANSPORT_ENABLED   1
+
+#define BLE_DEVICE_NAME         "BBSHD-Middleman"
+
+// Bump whenever the GATT frame layout below changes. The dashboard refuses to
+// talk to a device whose protocol version it does not understand.
+#define BLE_PROTOCOL_VERSION    1
+
+// Largest request or response body accepted over BLE. The v6 config JSON is the
+// biggest payload at roughly 3 KB, so this leaves generous headroom.
+#define BLE_MAX_FRAME_BODY      6144
+
+// Preferred ATT MTU. The ESP32-S3 supports up to 517; the value actually in
+// effect is whatever the phone negotiates, and notify chunking follows it.
+#define BLE_PREFERRED_MTU       517
+
+// Cadence of the unsolicited telemetry push, in milliseconds. Only sent while a
+// client is connected, and it replaces the dashboard's 1.5 s HTTP poll entirely.
+// The event log is pushed on change instead (see TelemetryTracker::getEventSeq).
+#define BLE_TELEMETRY_PUSH_MS   1000
+
+// Bluetooth PIN policy. The PIN itself lives in NVS (see WebPortal::getBlePin);
+// an empty PIN leaves the BLE API open. BLE range is only a few metres, so this
+// backoff exists to make a short PIN tedious to guess rather than to stop a
+// remote attacker. The counter deliberately survives a disconnect, so dropping
+// the link does not buy a fresh budget of attempts.
+#define BLE_AUTH_MAX_ATTEMPTS   5
+#define BLE_AUTH_LOCKOUT_MS     30000
+
 #endif // CONFIG_H

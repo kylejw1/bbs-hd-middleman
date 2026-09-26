@@ -4,6 +4,7 @@
 #include "Telemetry.h"
 #include "SerialBridge.h"
 #include "WebPortal.h"
+#include "BlePortal.h"
 #include "DebugLog.h"
 #include <esp_log.h>
 #include <esp_ota_ops.h>
@@ -79,6 +80,13 @@ void setup() {
     // Initialize Wi-Fi Access Point & Web Portal
     Portal.begin();
 
+    #if BLE_TRANSPORT_ENABLED
+    // BLE transport so the hosted (HTTPS) dashboard can reach the bike without
+    // joining its Wi-Fi. Advertises regardless of Wi-Fi mode; only one client is
+    // expected at a time.
+    Ble.begin();
+    #endif
+
     // Attempt initial query of controller firmware version
     uint8_t maj = 0, min = 0, pat = 0, cfgVer = 0;
     ControllerType cType = ControllerType::Unknown;
@@ -111,7 +119,12 @@ void loop() {
     // 2. Process web server and DNS captive portal
     Portal.process();
 
-    // 3. Heartbeat LED animation
+    // 3. Process the BLE API transport (deferred off the Bluedroid task)
+    #if BLE_TRANSPORT_ENABLED
+    Ble.process();
+    #endif
+
+    // 4. Heartbeat LED animation
     uint32_t now = millis();
     uint32_t blinkInterval = 1000; // Normal idle: 1s
 

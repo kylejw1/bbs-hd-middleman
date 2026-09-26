@@ -164,8 +164,73 @@ The ESP32-S3 has a **single 2.4 GHz radio**, so AP+STA coexistence is slow. The 
 * mDNS is advertised as `http://<MDNS_HOSTNAME>.local/` (default `bbshd.local`) in both modes via `MDNS.begin()`; the hostname and current mode are exposed by `/api/info`.
 * All lifecycle work happens non-blockingly in `WebPortal::process()` driven by the `WifiPhase` state machine (`StaConnecting` → `StaConnected` / `ApScanning` → `ApOnly`). Never add a blocking wait here — it would stall `Bridge.process()` and overrun the 1200-baud UART.
 
+### Bluetooth LE Transport (`BlePortal`)
+The dashboard is normally reached over Wi-Fi, but a page loaded over **HTTPS** cannot call `http://192.168.4.1` (mixed content) and Web Bluetooth requires a **secure context** the ESP32 cannot provide. The hosted copy therefore reaches the bike over BLE GATT. This is additive: the on-device HTTP copy remains the universal fallback and is the only option on iOS Safari, which has no Web Bluetooth at all.
+
+* **Stack**: Bluedroid (`BLEDevice.h`), the only BLE stack the precompiled `espressif32@6.12.0` SDK ships (`libbt.a`; there is no NimBLE library in that core). Guarded by `BLE_TRANSPORT_ENABLED` in [`Config.h`](file:///home/kyle/dev/bbs-hd-middleman/include/Config.h) — set it to `0` to drop roughly 700 KB flash / 30 KB RAM.
+* **Cost**: with BLE enabled the image is about 46% of the 3.19 MB app partition and 27.6% of DRAM. Both OTA slots still fit.
+* **Device name**: `BLE_DEVICE_NAME` (`BBSHD-Middleman`). The service UUID is advertised so `navigator.bluetooth.requestDevice({filters:[{services:[...]}]})` can match it.
+* **UUIDs and frame layout** live in [`include/BleProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/include/BleProtocol.h) and are duplicated verbatim in `web/index.html`. Change them in both places or discovery silently stops working.
+
+| Characteristic | Props | Payload |
+| :--- | :--- | :--- |
+| `…0002` INFO | Read | `{"protocol":1,"name":…,"fw":…}` — fixed; dynamic values come from `/api/info` |
+| `…0003` REQUEST | Write, WriteWithoutResponse | `u16 seq \| u8 method \| u8 rsvd \| u16 pathLen \| u16 bodyLen \| path \| body` |
+| `…0004` RESPONSE | Notify | `u16 seq \| u16 status \| u16 totalLen \| body slice` |
+
+* Both directions are **byte streams**, not single packets: a v6 config body is ~3 KB, well past even a 517-byte ATT MTU. The client writes consecutive slices and the device notifies consecutive slices; each side reassembles in order. The response header repeats on every slice so each notification is self-describing.
+* `seq` is echoed from the request. Sequence numbers are **split by direction**: replies use `1..BLE_REQUEST_SEQ_MAX` (0x7FFF), device pushes use `BLE_PUSH_SEQ_BASE` (0x8000)`..0xFFFF`, so a push can never be mistaken for a reply.
+* Notify chunking follows the negotiated MTU (`BLEServer::getPeerMTU()` minus the 3-byte ATT header, capped at `kMaxNotifyChunk`). The browser cannot read the MTU, so it starts at 200 bytes and halves on a failed first write.
+* **Threading (critical)**: the GATT callbacks run on the **Bluedroid task**. They do nothing but append bytes to a mutex-protected ring and flip a `_connected` flag. `BlePortal::process()` — called from `loop()` — reassembles the request, calls `Portal.dispatchApi()` and notifies the reply. Never dispatch an API call from a callback: the handlers drive the 1200-baud bridge and a config write holds `CONFIG_INTERCEPT` for over a second.
+* A half-received request and the pending queue are discarded on disconnect.
+
+### BLE Push Notifications
+Replies and pushes share the RESPONSE characteristic and are told apart by the sequence range. For a push the `status` field carries the push kind instead of an HTTP status:
+
+| Push | `status` | Cadence |
+| :--- | :--- | :--- |
+| Live telemetry | `BLE_PUSH_TELEMETRY` (1) | every `BLE_TELEMETRY_PUSH_MS` (1 s) while connected |
+| Event log | `BLE_PUSH_EVENTS` (2) | only when `TelemetryTracker::getEventSeq()` moves |
+
+* `TelemetryTracker::_eventSeq` is a **monotonic** counter (unlike `_eventCount`, which saturates at `MAX_EVENT_LOG_ENTRIES`), so "has anything happened" stays answerable after the ring buffer wraps. A quiet bike generates no event traffic at all.
+* Both push kinds are built by `Telemetry.buildTelemetryJson()` / `buildEventsJson()` — the exact builders `/api/telemetry` and `/api/events` use, so a push and a poll can never disagree.
+* On connect, `_lastTelemetryPushMs` is back-dated so a full snapshot goes out immediately, and `_havePushedEvents` is cleared so the new client always receives the existing log.
+* **Each push carries its own incrementing seq** rather than a fixed id. The client reassembles pushes per message (`Ble.pushBuf`), so a partially delivered push self-heals when the next one arrives instead of corrupting a shared buffer. A single dropped ATT notification is therefore survivable — which matters because Bluedroid drops notifications rather than blocking when its TX queue is full.
+* The client renders pushes through the *same* `renderTelemetry()` / `renderEvents()` that the pollers use; `pollTelemetry()` and `pollEvents()` simply call those after a fetch.
+* The pollers stand down only while pushes are healthy (`blePushesHealthy()`: connected and a push within `BLE_PUSH_STALE_MS`). If pushes dry up — link trouble, congestion — polling resumes on its own rather than leaving the dashboard frozen.
+
+### BLE Authentication (PIN)
+BLE GATT has no notion of "who is connecting". Without a gate, anyone in radio range can pair and rewrite the controller's EEPROM, which is a bad thing to have happen at a traffic light. The transport therefore enforces a PIN.
+
+* The PIN lives in NVS (`bbshd-cfg` / `ble_pin`) and is owned by [`WebPortal`](file:///home/kyle/dev/bbs-hd-middleman/include/WebPortal.h) — `getBlePin()` / `setBlePin()` — because WebPortal already owns device settings and NVS. **An empty PIN means the BLE API is open**, which is the default so an existing device keeps working.
+* `/api/auth` (`BLE_AUTH_PATH`) is a **BLE-only** route and is deliberately *not* in `API_ROUTES`. `BlePortal::dispatchOne()` intercepts it before dispatch. While a PIN is set and the connection is unauthenticated, every other route gets `401` and no data is pushed.
+* The gate is **transport-specific on purpose**: the Wi-Fi/HTTP page is never gated, because reaching it already requires being on the bike's own network or access point — and that page is the recovery path if the PIN is forgotten. It hosts the set/clear control via `/api/ble-pin` (also in `API_ROUTES`, so the hosted BLE page can use the same control once authenticated).
+* `GET /api/ble-pin` reports only `pinSet`/`bleEnabled`; it never returns the PIN. `POST` accepts `{"pin":"..."}` (4–16 characters) and an empty string clears it.
+* `_authenticated` is **per connection** and cleared every time a link comes up. `_authFailures` deliberately is **not** — reconnecting does not buy a fresh budget. After `BLE_AUTH_MAX_ATTEMPTS` (5) the transport refuses for `BLE_AUTH_LOCKOUT_MS` (30 s) with `429`.
+* The dashboard stores the PIN in `localStorage` (`bbshd.ble.pin`) and sends it automatically; if the device rejects it, the user is prompted once, and a second failure aborts the connection rather than leaving an unusable link up.
+* **Not covered:** the HTTP API is unauthenticated by design (see above), and the BLE link itself is not encrypted — there is no bonding/passkey, so the PIN is protection against casual tampering, not against a determined attacker with a radio sniffer. Bonding would be the next step if that matters.
+
 ### Web UI Polling Budget
-The dashboard polls `/api/telemetry` (1.5 s), `/api/events` (3 s), and — only while the Debug Console toggle is on and its tab is visible — `/api/serial-trace` (0.5 s). All polling functions bail out when `document.hidden`. `DebugLog` tracing is disabled by default (`DEBUG_TRACE_ENABLED_DEFAULT 0`) so an idle device generates no trace traffic.
+Over HTTP the dashboard polls `/api/telemetry` (1.5 s) and `/api/events` (3 s). **Over Bluetooth neither poll runs** while pushes are healthy: telemetry arrives pushed at 1 s and the event log is pushed only on change, so the dashboard is both fresher and quieter than its HTTP equivalent. The Debug Console poll (`/api/serial-trace`, 0.5 s) still runs on both transports, and only while the toggle is on and its tab is visible. All polling functions bail out when `document.hidden`. `DebugLog` tracing is disabled by default (`DEBUG_TRACE_ENABLED_DEFAULT 0`) so an idle device generates no trace traffic.
+
+### Dashboard Sources & Build Pipeline (critical)
+The dashboard has **one source of truth: [`web/index.html`](file:///home/kyle/dev/bbs-hd-middleman/web/index.html)**. The same file is delivered two ways:
+
+* **On-device** — `tools/embed_web.py` wraps it in a PROGMEM raw string literal and writes `include/WebContent.h`, which `WebPortal` serves at `/`. This runs as a PlatformIO pre-script (`extra_scripts = pre:tools/embed_web.py`), so the header is regenerated before every build.
+* **Hosted** — GitHub Pages serves `web/` over HTTPS (see [`.github/workflows/pages.yml`](file:///home/kyle/dev/bbs-hd-middleman/.github/workflows/pages.yml)), which makes it a secure context so `navigator.bluetooth` exists. That copy talks BLE; `web/sw.js` caches the shell so it opens with no network at all.
+
+`include/WebContent.h` is **generated** and committed only so a checkout always compiles. Editing it directly is pointless: the next build silently reverts you. Edit `web/index.html` and run `python3 tools/embed_web.py` (or just build).
+
+Keep the page honest about where it runs: `isHostedCopy()` (HTTPS means hosted — the ESP32 only serves plain HTTP) gates both the PWA wiring (`initPwa()`) and the default transport. The manifest, service worker and icons are **not** served by the ESP32, so the device copy must never request them.
+
+**Never call `sys.exit()` from a PlatformIO pre-script.** `SystemExit` propagates out of the SConscript and terminates SCons with a *clean* status, so `pio run` prints `SUCCESS` in ~0.5 s without compiling anything. If a build finishes suspiciously fast, check that it actually recompiled.
+
+### Transport-Neutral API
+Every dashboard call goes through `apiFetch()` in `web/index.html`, which is the single choke point between the UI and the backend. On the wire the API is one implementation shared by both transports:
+
+* `API_ROUTES[]` in [`src/ApiHandlers.cpp`](file:///home/kyle/dev/bbs-hd-middleman/src/ApiHandlers.cpp) is the route table. `WebPortal::setupRoutes()` registers one HTTP handler per row and `WebPortal::dispatchApi()` switches on the matching `ApiRouteId`, so the HTTP and BLE transports cannot diverge.
+* Route handlers never touch `_server` for an API reply. They call `sendApi()`, which either writes to the HTTP socket or captures into an `ApiResponse` when the BLE transport is driving. This is why one handler body serves both transports byte-for-byte.
+* `dispatchApi()` must be called from `loop()` only — **never from a Bluetooth callback**. The handlers drive the 1200-baud bridge (a config write holds `CONFIG_INTERCEPT` for over a second) and the capture sink is not thread-safe.
 
 ---
 
@@ -176,15 +241,30 @@ The dashboard polls `/api/telemetry` (1.5 s), `/api/events` (3 s), and — only 
 ├── platformio.ini         # PlatformIO build config (espressif32@6.12.0, ESP32-S3 DevKitC-1)
 ├── README.md              # Human-facing guide (BOM, wiring diagrams, user manual)
 ├── AGENTS.md              # This file (Agent handoff reference & technical specs)
+├── .github/workflows/
+│   └── pages.yml          # Publishes web/ to GitHub Pages (the HTTPS/BLE copy)
+├── tools/
+│   ├── embed_web.py       # Generates include/WebContent.h from web/index.html
+│   └── make_icons.py      # Generates the PWA icons in web/icons/
+├── web/                   # Hosted dashboard: served by GitHub Pages AND embedded below
+│   ├── index.html         # SINGLE SOURCE OF TRUTH for the dashboard SPA
+│   ├── manifest.webmanifest
+│   ├── sw.js              # Cache-first shell so the hosted copy opens offline
+│   └── icons/             # Generated by tools/make_icons.py
 ├── include/
 │   ├── Config.h           # Hardware pins, Wi-Fi credentials, timeouts, buffer sizes
+│   ├── ApiHandlers.h      # Transport-neutral ApiRequest/ApiResponse + route table
+│   ├── BleProtocol.h      # GATT UUIDs + BLE frame layout (mirrored in web/index.html)
+│   ├── BlePortal.h        # BLE GATT server, deferred API dispatch
 │   ├── BbsFwProtocol.h    # Opcodes, structs, bitmasks, checksums, JSON serialization
 │   ├── Telemetry.h        # Thread-safe metrics tracker & event log ring buffer
 │   ├── SerialBridge.h     # Dual UART engine, state machine, mock synthesizer
-│   ├── WebContent.h       # Single-page HTML5/CSS/JS dashboard stored in PROGMEM
+│   ├── WebContent.h       # GENERATED from web/index.html -- do not edit
 │   └── WebPortal.h        # WebServer, REST APIs, DNS Captive Portal, Wi-Fi manager
 └── src/
     ├── main.cpp           # Setup, cooperative loop, status LED heartbeat
+    ├── ApiHandlers.cpp    # API_ROUTES table + route/query helpers
+    ├── BlePortal.cpp      # Bluedroid GATT server, request reassembly, notify chunking
     ├── BbsFwProtocol.cpp  # JSON <-> struct converters, event log string table
     ├── Telemetry.cpp      # Metric calculations, speed math, JSON builder
     ├── SerialBridge.cpp   # Non-blocking UART streaming, arbitration logic
@@ -215,6 +295,15 @@ The dashboard polls `/api/telemetry` (1.5 s), `/api/events` (3 s), and — only 
 /home/kyle/.platformio/penv/bin/pio device monitor
 ```
 
+### OTA (Over-the-Air) Update
+Firmware upload works **only over the on-device HTTP page**, and that is deliberate.
+
+* The dashboard's Firmware tab POSTs the raw `.bin` to `/update`, registered separately from the API routes (`_server.on("/update", HTTP_POST, handleOtaComplete, handleOtaUpload)`). The raw handler streams into `Update.begin()` / `Update.write()` / `Update.end(true)` and reboots.
+* `/update` is **not** in `API_ROUTES` and must not be. A ~1.5 MB body has no place in the BLE request/response framing (`BLE_MAX_FRAME_BODY` is 6144), and the hosted page cannot reach `http://192.168.4.1` anyway — an HTTPS page XHR-ing a plain-HTTP address is mixed content.
+* The hosted copy therefore shows a notice instead of the upload controls (`initOtaGate()` in `web/index.html`, gated on `isHostedCopy()`), and `startOtaUpload()` refuses as a backstop. To flash from a phone: join `BBS-FW-Middleman` and use `http://192.168.4.1/`, or use `http://bbshd.local/` if the middleman is already on the LAN.
+* If BLE-streamed OTA or OTA-from-URL is ever added, keep the upload path out of the JSON API and remember that the ~1.5 MB image takes roughly a minute or more over BLE.
+* **Recovery is already in place**: `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` plus `esp_ota_mark_app_valid_cancel_rollback()` at the end of `setup()`, on the dual `app0`/`app1` slots from `default_8MB.csv` (3.19 MB each). An upload that never reaches `Update.end()` leaves the running slot untouched; an image that crash-loops before marking itself valid rolls back on the next reset.
+
 ---
 
 ## 6. Critical Rules for AI Agents Modifying Code
@@ -222,12 +311,14 @@ The dashboard polls `/api/telemetry` (1.5 s), `/api/events` (3 s), and — only 
 1. **Never Change Struct Packing**:
    [`BbsFwConfigV5`](file:///home/kyle/dev/bbs-hd-middleman/include/BbsFwProtocol.h#L66-L122) and [`AssistLevel`](file:///home/kyle/dev/bbs-hd-middleman/include/BbsFwProtocol.h#L57-L64) MUST remain `#pragma pack(push, 1)`. Modifying byte alignment or reordering fields will corrupt the controller's EEPROM.
 2. **Never Introduce Blocking Delays in the Main Loop**:
-   Both `Bridge.process()` and `Portal.process()` must run cooperatively on every iteration of `loop()`. Long delays in `loop()` cause UART buffer overruns at 1200 baud.
+   `Bridge.process()`, `Portal.process()` and `Ble.process()` must run cooperatively on every iteration of `loop()`. Long delays in `loop()` cause UART buffer overruns at 1200 baud.
 3. **Preserve Display Keep-Alive Mock Responses**:
    Any new controller transactions that block the normal bridge MUST use the pattern in `sendAndReceiveController()`:
    * Keep servicing `processDisplayRxIntercept()` while waiting for controller bytes.
    * Synthesize immediate responses to display queries so the display never times out.
 4. **Zero External CDN Dependencies in Web Content**:
-   All CSS, JavaScript, and HTML in [`include/WebContent.h`](file:///home/kyle/dev/bbs-hd-middleman/include/WebContent.h) must remain self-contained. Bikes are ridden in areas without internet connectivity.
-5. **Always Verify Compilation Before Finishing**:
+   All CSS, JavaScript, and HTML in [`web/index.html`](file:///home/kyle/dev/bbs-hd-middleman/web/index.html) (and therefore the generated `include/WebContent.h`) must remain self-contained. Bikes are ridden in areas without internet connectivity. The hostname is only ever used for the optional GitHub Pages copy — the on-device dashboard must never fetch anything off-device.
+5. **Never Dispatch an API Call From a Bluetooth Callback**:
+   GATT callbacks run on the Bluedroid task. They may only append bytes to `BlePortal`'s ring and flip `_connected`; `BlePortal::process()` in `loop()` does the dispatch. Calling `WebPortal::dispatchApi()` (or touching the bridge) from a callback would race the main task and stall the BT stack.
+6. **Always Verify Compilation Before Finishing**:
    Always run `/home/kyle/.platformio/penv/bin/pio run` to verify that code builds cleanly with zero errors and zero warnings.

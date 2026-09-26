@@ -1,6 +1,7 @@
 #include "WebPortal.h"
 #include <Update.h>
 #include <ESPmDNS.h>
+#include <string.h>
 
 WebPortal Portal;
 
@@ -29,6 +30,7 @@ void WebPortal::setupWifi() {
     _prefs.begin("bbshd-cfg", false);
     _staSsid = _prefs.getString("sta_ssid", "");
     _staPass = _prefs.getString("sta_pass", "");
+    _blePin = _prefs.getString("ble_pin", "");
     _staConfigured = (_staSsid.length() > 0);
 
     _apActive = false;
@@ -214,21 +216,18 @@ void WebPortal::setupRoutes() {
     // Web UI
     _server.on("/", HTTP_GET, [this]() { handleRoot(); });
 
-    // REST APIs
-    _server.on("/api/telemetry", HTTP_GET, [this]() { handleTelemetry(); });
-    _server.on("/api/events", HTTP_GET, [this]() { handleEvents(); });
-    _server.on("/api/config", HTTP_GET, [this]() { handleGetConfig(); });
-    _server.on("/api/config", HTTP_POST, [this]() { handlePostConfig(); });
-    _server.on("/api/reset", HTTP_POST, [this]() { handleResetConfig(); });
-    _server.on("/api/calibrate", HTTP_POST, [this]() { handleCalibrateVoltage(); });
-    _server.on("/api/cmd/pas", HTTP_POST, [this]() { handleCmdPas(); });
-    _server.on("/api/cmd/mode", HTTP_POST, [this]() { handleCmdMode(); });
-    _server.on("/api/cmd/lights", HTTP_POST, [this]() { handleCmdLights(); });
-    _server.on("/api/wifi", HTTP_POST, [this]() { handleWifiConfig(); });
-    _server.on("/api/info", HTTP_GET, [this]() { handleInfo(); });
-    _server.on("/api/serial-trace", HTTP_GET, [this]() { handleSerialTrace(); });
-    _server.on("/api/debug", HTTP_GET, [this]() { handleDebugConfig(); });
-    _server.on("/api/debug", HTTP_POST, [this]() { handleDebugConfig(); });
+    // REST APIs. Registered straight from API_ROUTES -- the same table
+    // dispatchApi() switches on -- so the HTTP and BLE transports can never end
+    // up exposing different route sets.
+    for (size_t i = 0; i < API_ROUTE_COUNT; ++i) {
+        const ApiRoute& route = API_ROUTES[i];
+        _server.on(route.path, route.post ? HTTP_POST : HTTP_GET, [this, &route]() {
+            ApiRequest req;
+            req.path = route.path;
+            req.post = route.post;
+            serveApi(req);
+        });
+    }
 
     // OTA firmware upload
     _server.on("/update", HTTP_POST, [this]() { handleOtaComplete(); }, [this]() { handleOtaUpload(); });
@@ -242,6 +241,148 @@ void WebPortal::setupRoutes() {
     _server.onNotFound([this]() { handleNotFound(); });
 }
 
+void WebPortal::serveApi(const ApiRequest& request) {
+    ApiRequest req = request;
+
+    // WebServer owns the request body, so keep a copy alive for the duration of
+    // the dispatch and hand the handler a pointer to it.
+    String body;
+    if (req.post && _server.hasArg("plain")) {
+        body = _server.arg("plain");
+        req.body = &body;
+    }
+    if (_server.hasArg("after")) {
+        req.afterSeq = (uint32_t)_server.arg("after").toInt();
+    }
+
+    ApiResponse res;
+    if (!dispatchApi(req, res)) {
+        _server.send(404, "application/json", "{\"error\":\"Not found\"}");
+        return;
+    }
+
+    _server.send(res.status, res.html ? "text/html" : "application/json", res.body);
+}
+
+void WebPortal::sendApi(int status, const char* contentType, const String& body) {
+    if (_apiOut) {
+        _apiOut->status = status;
+        _apiOut->body = body;
+        _apiOut->html = (contentType != nullptr && strcmp(contentType, "text/html") == 0);
+        return;
+    }
+
+    _server.send(status, contentType, body);
+}
+
+bool WebPortal::dispatchApi(const ApiRequest& req, ApiResponse& out) {
+    const ApiRoute* route = findApiRoute(req.path, req.post);
+    if (route == nullptr) {
+        return false;
+    }
+
+    // Handlers reply through sendApi(), which redirects into `captured` rather
+    // than the HTTP socket. Save and restore the sink so a nested dispatch cannot
+    // corrupt the outer one and a capture can never outlive this call.
+    //
+    // Call this from loop() only -- never from a Bluetooth callback. The handlers
+    // drive the 1200-baud bridge (a config write holds CONFIG_INTERCEPT for over
+    // a second) and the sink fields are not thread-safe.
+    ApiResponse captured;
+    ApiResponse* const previousOut = _apiOut;
+    const String* const previousBody = _apiBody;
+    const bool previousPost = _apiIsPost;
+    const uint32_t previousAfter = _apiAfterSeq;
+
+    _apiOut = &captured;
+    _apiBody = req.body;
+    _apiIsPost = req.post;
+    _apiAfterSeq = req.afterSeq;
+
+    switch (route->id) {
+        case ApiRouteId::Telemetry:        handleTelemetry();        break;
+        case ApiRouteId::Events:           handleEvents();           break;
+        case ApiRouteId::GetConfig:        handleGetConfig();        break;
+        case ApiRouteId::PostConfig:       handlePostConfig();       break;
+        case ApiRouteId::ResetConfig:      handleResetConfig();      break;
+        case ApiRouteId::CalibrateVoltage: handleCalibrateVoltage(); break;
+        case ApiRouteId::CmdPas:           handleCmdPas();           break;
+        case ApiRouteId::CmdMode:          handleCmdMode();          break;
+        case ApiRouteId::CmdLights:        handleCmdLights();        break;
+        case ApiRouteId::WifiConfig:       handleWifiConfig();       break;
+        case ApiRouteId::Info:             handleInfo();             break;
+        case ApiRouteId::SerialTrace:      handleSerialTrace();      break;
+        case ApiRouteId::DebugConfig:      handleDebugConfig();      break;
+        case ApiRouteId::BlePin:           handleBlePin();           break;
+    }
+
+    _apiOut = previousOut;
+    _apiBody = previousBody;
+    _apiIsPost = previousPost;
+    _apiAfterSeq = previousAfter;
+
+    out = captured;
+    return true;
+}
+
+String WebPortal::getBlePin() const {
+    return _blePin;
+}
+
+void WebPortal::setBlePin(const String& pin) {
+    _blePin = pin;
+    _prefs.putString("ble_pin", pin);
+}
+
+void WebPortal::handleBlePin() {
+    // GET only reports whether a PIN is set; it never reveals the PIN itself.
+    if (!_apiIsPost) {
+        JsonDocument doc;
+        doc["pinSet"] = (_blePin.length() > 0);
+#if BLE_TRANSPORT_ENABLED
+        doc["bleEnabled"] = true;
+#else
+        doc["bleEnabled"] = false;
+#endif
+        String out;
+        serializeJson(doc, out);
+        sendApi(200, "application/json", out);
+        return;
+    }
+
+    if (!_apiBody) {
+        sendApi(400, "application/json", "{\"error\":\"Missing body\"}");
+        return;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, *_apiBody)) {
+        sendApi(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+        return;
+    }
+
+    String pin = doc["pin"] | "";
+    pin.trim();
+
+    // Empty clears the PIN, which re-opens the BLE API. Anything else must be
+    // long enough to be worth something: a 1-2 character PIN would be trivial to
+    // guess at BLE range.
+    if (pin.length() > 0 && (pin.length() < 4 || pin.length() > 16)) {
+        sendApi(400, "application/json",
+                "{\"error\":\"PIN must be 4-16 characters, or empty to remove\"}");
+        return;
+    }
+
+    setBlePin(pin);
+
+    JsonDocument resp;
+    resp["success"] = true;
+    resp["pinSet"] = (pin.length() > 0);
+    String out;
+    serializeJson(resp, out);
+    sendApi(200, "application/json", out);
+}
+
 void WebPortal::handleRoot() {
     _server.send_P(200, "text/html", INDEX_HTML);
 }
@@ -252,7 +393,7 @@ void WebPortal::handleTelemetry() {
 
     String jsonStr;
     serializeJson(doc, jsonStr);
-    _server.send(200, "application/json", jsonStr);
+    sendApi(200, "application/json", jsonStr);
 }
 
 void WebPortal::handleEvents() {
@@ -261,7 +402,7 @@ void WebPortal::handleEvents() {
 
     String jsonStr;
     serializeJson(doc, jsonStr);
-    _server.send(200, "application/json", jsonStr);
+    sendApi(200, "application/json", jsonStr);
 }
 
 void WebPortal::handleGetConfig() {
@@ -271,7 +412,7 @@ void WebPortal::handleGetConfig() {
     if (!ok) {
         // Never fabricate a config for the UI: if the controller did not answer,
         // report the failure and leave the form fields empty.
-        _server.send(503, "application/json",
+        sendApi(503, "application/json",
                      "{\"success\":false,\"fromController\":false,"
                      "\"error\":\"Controller did not respond\"}");
         return;
@@ -283,21 +424,21 @@ void WebPortal::handleGetConfig() {
 
     String jsonStr;
     serializeJson(doc, jsonStr);
-    _server.send(200, "application/json", jsonStr);
+    sendApi(200, "application/json", jsonStr);
 }
 
 void WebPortal::handlePostConfig() {
-    if (!_server.hasArg("plain")) {
-        _server.send(400, "application/json", "{\"error\":\"Missing body\"}");
+    if (!_apiBody) {
+        sendApi(400, "application/json", "{\"error\":\"Missing body\"}");
         return;
     }
 
-    String body = _server.arg("plain");
+    const String& body = *_apiBody;
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, body);
 
     if (err) {
-        _server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+        sendApi(400, "application/json", "{\"error\":\"Invalid JSON\"}");
         return;
     }
 
@@ -314,7 +455,7 @@ void WebPortal::handlePostConfig() {
 
     uint8_t payloadVer = doc["configVersion"] | 0;
     if (payloadVer != 0 && payloadVer != ver) {
-        _server.send(409, "application/json",
+        sendApi(409, "application/json",
                      "{\"success\":false,\"error\":\"Config version mismatch: payload is v"
                      + String(payloadVer) + " but the controller is v" + String(ver)
                      + ". Read from the controller and retry.\"}");
@@ -335,7 +476,7 @@ void WebPortal::handlePostConfig() {
 
     String jsonResp;
     serializeJson(resp, jsonResp);
-    _server.send(ok ? 200 : 500, "application/json", jsonResp);
+    sendApi(ok ? 200 : 500, "application/json", jsonResp);
 }
 
 void WebPortal::handleResetConfig() {
@@ -345,21 +486,21 @@ void WebPortal::handleResetConfig() {
     resp["success"] = ok;
     String jsonResp;
     serializeJson(resp, jsonResp);
-    _server.send(ok ? 200 : 500, "application/json", jsonResp);
+    sendApi(ok ? 200 : 500, "application/json", jsonResp);
 }
 
 void WebPortal::handleCalibrateVoltage() {
-    if (!_server.hasArg("plain")) {
-        _server.send(400, "application/json", "{\"error\":\"Missing body\"}");
+    if (!_apiBody) {
+        sendApi(400, "application/json", "{\"error\":\"Missing body\"}");
         return;
     }
 
     JsonDocument doc;
-    deserializeJson(doc, _server.arg("plain"));
+    deserializeJson(doc, *_apiBody);
 
     float volts = doc["voltage"] | 0.0f;
     if (volts < 20.0f || volts > 70.0f) {
-        _server.send(400, "application/json", "{\"error\":\"Voltage out of range\"}");
+        sendApi(400, "application/json", "{\"error\":\"Voltage out of range\"}");
         return;
     }
 
@@ -369,59 +510,59 @@ void WebPortal::handleCalibrateVoltage() {
     resp["success"] = ok;
     String jsonResp;
     serializeJson(resp, jsonResp);
-    _server.send(ok ? 200 : 500, "application/json", jsonResp);
+    sendApi(ok ? 200 : 500, "application/json", jsonResp);
 }
 
 void WebPortal::handleCmdPas() {
-    if (!_server.hasArg("plain")) {
-        _server.send(400, "application/json", "{\"error\":\"Missing body\"}");
+    if (!_apiBody) {
+        sendApi(400, "application/json", "{\"error\":\"Missing body\"}");
         return;
     }
 
     JsonDocument doc;
-    deserializeJson(doc, _server.arg("plain"));
+    deserializeJson(doc, *_apiBody);
     uint8_t lvl = doc["level"] | 1;
 
     Bridge.injectPasLevel(lvl);
-    _server.send(200, "application/json", "{\"success\":true}");
+    sendApi(200, "application/json", "{\"success\":true}");
 }
 
 void WebPortal::handleCmdMode() {
-    if (!_server.hasArg("plain")) {
-        _server.send(400, "application/json", "{\"error\":\"Missing body\"}");
+    if (!_apiBody) {
+        sendApi(400, "application/json", "{\"error\":\"Missing body\"}");
         return;
     }
 
     JsonDocument doc;
-    deserializeJson(doc, _server.arg("plain"));
+    deserializeJson(doc, *_apiBody);
     uint8_t mode = doc["mode"] | 0;
 
     Bridge.injectOperationMode(mode);
-    _server.send(200, "application/json", "{\"success\":true}");
+    sendApi(200, "application/json", "{\"success\":true}");
 }
 
 void WebPortal::handleCmdLights() {
-    if (!_server.hasArg("plain")) {
-        _server.send(400, "application/json", "{\"error\":\"Missing body\"}");
+    if (!_apiBody) {
+        sendApi(400, "application/json", "{\"error\":\"Missing body\"}");
         return;
     }
 
     JsonDocument doc;
-    deserializeJson(doc, _server.arg("plain"));
+    deserializeJson(doc, *_apiBody);
     bool on = doc["on"] | false;
 
     Bridge.injectLights(on);
-    _server.send(200, "application/json", "{\"success\":true}");
+    sendApi(200, "application/json", "{\"success\":true}");
 }
 
 void WebPortal::handleWifiConfig() {
-    if (!_server.hasArg("plain")) {
-        _server.send(400, "application/json", "{\"error\":\"Missing body\"}");
+    if (!_apiBody) {
+        sendApi(400, "application/json", "{\"error\":\"Missing body\"}");
         return;
     }
 
     JsonDocument doc;
-    deserializeJson(doc, _server.arg("plain"));
+    deserializeJson(doc, *_apiBody);
 
     String ssid = doc["ssid"] | "";
     String pass = doc["pass"] | "";
@@ -437,9 +578,9 @@ void WebPortal::handleWifiConfig() {
         // first (the SoftAP is kept up until the new link actually comes up).
         _pendingStaConnect = true;
         _pendingStaConnectMs = millis();
-        _server.send(200, "application/json", "{\"success\":true}");
+        sendApi(200, "application/json", "{\"success\":true}");
     } else {
-        _server.send(400, "application/json", "{\"error\":\"Invalid SSID\"}");
+        sendApi(400, "application/json", "{\"error\":\"Invalid SSID\"}");
     }
 }
 
@@ -468,23 +609,21 @@ void WebPortal::handleInfo() {
 
     String resp;
     serializeJson(doc, resp);
-    _server.send(200, "application/json", resp);
+    sendApi(200, "application/json", resp);
 }
 
 void WebPortal::handleSerialTrace() {
     // Tracing is off by default; return an empty payload without touching the
     // ring buffer so an idle client cannot rack up JSON-building work.
     if (!Debug.isEnabled()) {
-        _server.send(200, "application/json",
+        sendApi(200, "application/json",
                      "{\"enabled\":false,\"seq\":0,\"dropped\":0,\"bytes\":[],\"texts\":[]}");
         return;
     }
 
-    // Optional ?after=<seq> query param for incremental polling
-    uint32_t afterSeq = 0;
-    if (_server.hasArg("after")) {
-        afterSeq = (uint32_t)_server.arg("after").toInt();
-    }
+    // Optional ?after=<seq> cursor for incremental polling. The HTTP glue fills
+    // this in from the query string; the BLE transport parses its own.
+    uint32_t afterSeq = _apiAfterSeq;
 
     JsonDocument doc;
     Debug.buildTraceJson(doc, afterSeq);
@@ -492,19 +631,19 @@ void WebPortal::handleSerialTrace() {
 
     String jsonStr;
     serializeJson(doc, jsonStr);
-    _server.send(200, "application/json", jsonStr);
+    sendApi(200, "application/json", jsonStr);
 }
 
 void WebPortal::handleDebugConfig() {
-    if (_server.method() == HTTP_POST) {
-        if (!_server.hasArg("plain")) {
-            _server.send(400, "application/json", "{\"error\":\"Missing body\"}");
+    if (_apiIsPost) {
+        if (!_apiBody) {
+            sendApi(400, "application/json", "{\"error\":\"Missing body\"}");
             return;
         }
 
         JsonDocument doc;
-        if (deserializeJson(doc, _server.arg("plain"))) {
-            _server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+        if (deserializeJson(doc, *_apiBody)) {
+            sendApi(400, "application/json", "{\"error\":\"Invalid JSON\"}");
             return;
         }
 
@@ -519,7 +658,7 @@ void WebPortal::handleDebugConfig() {
     resp["enabled"] = Debug.isEnabled();
     String jsonResp;
     serializeJson(resp, jsonResp);
-    _server.send(200, "application/json", jsonResp);
+    sendApi(200, "application/json", jsonResp);
 }
 
 void WebPortal::handleOtaUpload() {
@@ -552,11 +691,11 @@ void WebPortal::handleOtaUpload() {
 void WebPortal::handleOtaComplete() {
     if (Update.hasError()) {
         _server.sendHeader("Connection", "close");
-        _server.send(500, "text/plain", Update.errorString());
+        sendApi(500, "text/plain", Update.errorString());
         Debug.tracef("OTA failed: %s", Update.errorString());
     } else {
         _server.sendHeader("Connection", "close");
-        _server.send(200, "text/plain", "OK");
+        sendApi(200, "text/plain", "OK");
         Debug.trace("OTA success, rebooting in 100ms");
         delay(100);
         ESP.restart();
@@ -570,10 +709,10 @@ void WebPortal::handleNotFound() {
         String apIP = WiFi.softAPIP().toString();
         if (_server.hostHeader() != apIP) {
             _server.sendHeader("Location", String("http://") + apIP + "/", true);
-            _server.send(302, "text/plain", "");
+            sendApi(302, "text/plain", "");
             return;
         }
     }
 
-    _server.send(404, "text/plain", "Not Found");
+    sendApi(404, "text/plain", "Not Found");
 }
