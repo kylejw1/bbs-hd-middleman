@@ -52,9 +52,18 @@ class RequestCallbacks : public BLECharacteristicCallbacks {
 void BlePortal::begin() {
     g_ble = this;
 
+    // Bluedroid needs one large *contiguous* allocation, so the largest free
+    // block matters more than total free heap. These go to the USB console
+    // rather than through Debug.trace, because tracing is off by default
+    // (DEBUG_TRACE_ENABLED_DEFAULT 0) and this is the only boot-time evidence
+    // that the transport came up -- or why it did not.
+    const uint32_t heapBefore = ESP.getFreeHeap();
+    const uint32_t blockBefore = ESP.getMaxAllocHeap();
+    Serial.printf("[BLE] init: free heap %u, largest block %u\n", heapBefore, blockBefore);
+
     _ringMutex = xSemaphoreCreateMutex();
     if (_ringMutex == nullptr) {
-        Debug.trace("BLE: mutex allocation failed, transport disabled");
+        Serial.println("[BLE] mutex allocation failed - transport disabled");
         return;
     }
 
@@ -63,14 +72,18 @@ void BlePortal::begin() {
 
     _server = BLEDevice::createServer();
     if (_server == nullptr) {
-        Debug.trace("BLE: server allocation failed, transport disabled");
+        // Almost always memory: Wi-Fi has taken the best of the heap by now.
+        Serial.printf("[BLE] server allocation failed (free heap %u, largest block %u)"
+                      " - transport disabled\n",
+                      ESP.getFreeHeap(), ESP.getMaxAllocHeap());
         return;
     }
     _server->setCallbacks(new ServerCallbacks());
 
     BLEService* service = _server->createService(BLE_SERVICE_UUID);
     if (service == nullptr) {
-        Debug.trace("BLE: service allocation failed, transport disabled");
+        Serial.printf("[BLE] service allocation failed (free heap %u) - transport disabled\n",
+                      ESP.getFreeHeap());
         return;
     }
 
@@ -104,7 +117,8 @@ void BlePortal::begin() {
     BLEDevice::startAdvertising();
     _advertising = true;
 
-    Debug.tracef("BLE: GATT service advertising as %s", BLE_DEVICE_NAME);
+    Serial.printf("[BLE] advertising as %s (free heap %u, largest block %u)\n",
+                  BLE_DEVICE_NAME, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 }
 
 void BlePortal::process() {

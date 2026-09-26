@@ -102,7 +102,19 @@
 // what keeps working on iOS Safari, where Web Bluetooth does not exist.
 //
 // Set to 0 to build without Bluedroid (saves roughly 700 KB flash / 60 KB RAM).
-#define BLE_TRANSPORT_ENABLED   1
+//
+// DEFAULT OFF: the BLE transport broke the bridge on real hardware -- the display
+// threw a communication error, meaning setup() never reached loop() and the
+// 1200-baud pass-through never ran. Nothing else depends on it, so the firmware
+// ships with it disabled until that is understood and fixed.
+//
+// The #ifndef lets a build flag override it without editing this file, so the
+// safe default stays in the tree while BLE is tested:
+//
+//     PLATFORMIO_BUILD_FLAGS="-DBLE_TRANSPORT_ENABLED=1" pio run -t upload
+#ifndef BLE_TRANSPORT_ENABLED
+#define BLE_TRANSPORT_ENABLED   0
+#endif
 
 #define BLE_DEVICE_NAME         "BBSHD-Middleman"
 

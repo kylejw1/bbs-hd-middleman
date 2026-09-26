@@ -159,13 +159,26 @@ The ESP32-S3 has a **single 2.4 GHz radio**, so AP+STA coexistence is slow. The 
 * If station credentials are stored, it joins the router in `WIFI_STA` only. On success it stays STA and the SoftAP + DNS captive portal are torn down.
 * If the join does not complete within `STA_CONNECT_TIMEOUT_MS`, it runs an **async** channel scan (`WiFi.scanNetworks(true, true)`, never a blocking scan in `loop()`) and brings up a SoftAP on the least-congested of channels 1/6/11.
 * If the station link drops, it waits `STA_LOST_GRACE_MS` for auto-reconnect before falling back to the SoftAP. Once on the SoftAP it does not retry the station until the user submits credentials again.
-* `WiFi.setSleep(false)` is set in every mode for dashboard latency.
+* Wi-Fi power save goes through `applyWifiPowerSave()` in [`src/WebPortal.cpp`](file:///home/kyle/dev/bbs-hd-middleman/src/WebPortal.cpp) — **never call `WiFi.setSleep(false)` directly**. With the BLE transport compiled in it must stay at `WIFI_PS_MIN_MODEM`, because the Wi-Fi driver aborts on `WIFI_PS_NONE` while Bluetooth is enabled. BLE-free builds keep `WIFI_PS_NONE` for the lowest dashboard latency.
 * The DNS server (`_dnsServer`, wildcard to the AP IP) runs **only while `_apActive`**. Captive-portal redirects (including `handleNotFound`) are likewise AP-only; in STA mode unknown paths return a real 404 so API typos stay debuggable.
 * mDNS is advertised as `http://<MDNS_HOSTNAME>.local/` (default `bbshd.local`) in both modes via `MDNS.begin()`; the hostname and current mode are exposed by `/api/info`.
 * All lifecycle work happens non-blockingly in `WebPortal::process()` driven by the `WifiPhase` state machine (`StaConnecting` → `StaConnected` / `ApScanning` → `ApOnly`). Never add a blocking wait here — it would stall `Bridge.process()` and overrun the 1200-baud UART.
 
 ### Bluetooth LE Transport (`BlePortal`)
 The dashboard is normally reached over Wi-Fi, but a page loaded over **HTTPS** cannot call `http://192.168.4.1` (mixed content) and Web Bluetooth requires a **secure context** the ESP32 cannot provide. The hosted copy therefore reaches the bike over BLE GATT. This is additive: the on-device HTTP copy remains the universal fallback and is the only option on iOS Safari, which has no Web Bluetooth at all.
+
+**`Ble.begin()` MUST run before `Portal.begin()` in `setup()`.** This is not a preference and not about memory — it is a hard requirement of this toolchain:
+
+* Arduino-ESP32 2.0.17 ships IDF 4.4, where `coex_enable()` **aborts** inside `esp_bt_controller_enable()` if `esp_wifi_set_ps(WIFI_PS_NONE)` has already been called (IDFGH-8094: [esp-idf#9595](https://github.com/espressif/esp-idf/issues/9595), [NimBLE-Arduino#437](https://github.com/h2zero/NimBLE-Arduino/issues/437)).
+* `WebPortal` calls `WiFi.setSleep(false)` — i.e. `WIFI_PS_NONE` — for dashboard latency, and it does so in `setupWifi()`, i.e. inside `Portal.begin()`.
+* Enabling Wi-Fi first therefore guarantees the abort. The observed failure: the bike's display throws a communication error, because `setup()` dies before `loop()` ever runs and the 1200-baud pass-through never starts. The decoded backtrace ends `abort() ← coex_core_enable ← coex_enable ← esp_bt_controller_enable ← btStart ← BLEDevice::init ← BlePortal::begin ← setup`.
+* Diagnosis is not obvious from the surface symptom, so if the bridge is ever dead *and* the display is erroring, check that Bluetooth is enabled before Wi-Fi rather than chasing the UART code. Total free heap is a red herring — the failing build had 220 KB free with a 205 KB contiguous block.
+
+**Modem sleep must also stay enabled while BLE is compiled in.** This is the second half of the same constraint, and fixing only the ordering produces a second abort:
+
+* With Bluetooth up, requesting `WIFI_PS_NONE` aborts inside `pm_set_sleep_type()` (`wifi_set_ps_process ← ieee80211_ioctl_process ← ppTask`) with the driver logging `E wifi: Error! Should enable WiFi modem sleep when both WiFi and Bluetooth are enabled!!!!!!`
+* All four power-save call sites therefore go through `applyWifiPowerSave()` in [`src/WebPortal.cpp`](file:///home/kyle/dev/bbs-hd-middleman/src/WebPortal.cpp) instead of calling `WiFi.setSleep(false)` directly: `WIFI_PS_MIN_MODEM` when BLE is compiled in, `WIFI_PS_NONE` when it is not.
+* The symptom is identical to the ordering abort — `setup()` dies, `loop()` never runs, the display throws a communication error — so treat "bridge dead + display erroring" as a radio-initialisation problem, never a UART one.
 
 * **Stack**: Bluedroid (`BLEDevice.h`), the only BLE stack the precompiled `espressif32@6.12.0` SDK ships (`libbt.a`; there is no NimBLE library in that core). Guarded by `BLE_TRANSPORT_ENABLED` in [`Config.h`](file:///home/kyle/dev/bbs-hd-middleman/include/Config.h) — set it to `0` to drop roughly 700 KB flash / 30 KB RAM.
 * **Cost**: with BLE enabled the image is about 46% of the 3.19 MB app partition and 27.6% of DRAM. Both OTA slots still fit.
@@ -183,6 +196,12 @@ The dashboard is normally reached over Wi-Fi, but a page loaded over **HTTPS** c
 * Notify chunking follows the negotiated MTU (`BLEServer::getPeerMTU()` minus the 3-byte ATT header, capped at `kMaxNotifyChunk`). The browser cannot read the MTU, so it starts at 200 bytes and halves on a failed first write.
 * **Threading (critical)**: the GATT callbacks run on the **Bluedroid task**. They do nothing but append bytes to a mutex-protected ring and flip a `_connected` flag. `BlePortal::process()` — called from `loop()` — reassembles the request, calls `Portal.dispatchApi()` and notifies the reply. Never dispatch an API call from a callback: the handlers drive the 1200-baud bridge and a config write holds `CONFIG_INTERCEPT` for over a second.
 * A half-received request and the pending queue are discarded on disconnect.
+
+**Browser support is not "all Chromium".** Chromium *the engine* implements Web Bluetooth, but the browser has to expose it:
+* Chrome / Edge desktop and Chrome Android: available; this is the target.
+* **Brave ships it disabled**, so `navigator.bluetooth` is `undefined`. The user must turn on `brave://flags/#enable-web-bluetooth` or launch with `--enable-features=WebBluetooth`. Brave also exposes a `DefaultWebBluetoothGuardSetting` enterprise policy.
+* Safari (all platforms) and Firefox: no Web Bluetooth. iOS can only get there through a third-party browser (Bluefy, WebBLE), which is not worth documenting as a supported path.
+* Never infer the API from the user agent — `bleSupported()` feature-detects and the page shows **BT: Unsupported** rather than a button that cannot work.
 
 ### BLE Push Notifications
 Replies and pushes share the RESPONSE characteristic and are told apart by the sequence range. For a push the `status` field carries the push kind instead of an HTTP status:

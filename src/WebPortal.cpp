@@ -5,6 +5,30 @@
 
 WebPortal Portal;
 
+namespace {
+
+// Wi-Fi modem sleep is MANDATORY while the Bluetooth controller is enabled.
+//
+// Requesting WIFI_PS_NONE with Bluetooth up makes the Wi-Fi driver abort inside
+// pm_set_sleep_type(), with the log message:
+//
+//   E wifi: Error! Should enable WiFi modem sleep when both WiFi and Bluetooth
+//           are enabled!!!!!!
+//
+// so `WiFi.setSleep(false)` is only safe in a BLE-free build. Both this abort
+// and the coex_enable() one it replaced present as "the middleman is dead and
+// the display is erroring", because both happen before setup() reaches loop().
+// The cost of WIFI_PS_MIN_MODEM is a little added dashboard latency.
+void applyWifiPowerSave() {
+#if BLE_TRANSPORT_ENABLED
+    (void)WiFi.setSleep(true);   // WIFI_PS_MIN_MODEM: required for coexistence
+#else
+    (void)WiFi.setSleep(false);  // WIFI_PS_NONE: lowest latency without BLE
+#endif
+}
+
+} // namespace
+
 WebPortal::WebPortal()
     : _server(HTTP_PORT)
     , _staConfigured(false)
@@ -57,7 +81,7 @@ void WebPortal::startStationAttempt(bool keepAccessPoint) {
     if (!(keepAccessPoint && _apActive)) {
         WiFi.mode(WIFI_STA);
     }
-    WiFi.setSleep(false);  // no modem sleep: lowest dashboard latency
+    applyWifiPowerSave();
     WiFi.begin(_staSsid.c_str(), _staPass.c_str());
     _wifiPhase = WifiPhase::StaConnecting;
     _staAttemptStartMs = millis();
@@ -84,7 +108,7 @@ void WebPortal::requestAccessPoint() {
     if (_apActive || _wifiPhase == WifiPhase::ApScanning) return;
 
     WiFi.mode(WIFI_STA);            // scanning requires the station interface
-    WiFi.setSleep(false);
+    applyWifiPowerSave();
     WiFi.scanNetworks(true, true);  // async: never block loop()
     _scanStartMs = millis();
     _wifiPhase = WifiPhase::ApScanning;
@@ -125,7 +149,7 @@ void WebPortal::startAccessPoint(uint8_t channel) {
     // AP_STA with an idle station keeps the door open for a later join request
     // without paying any coexistence cost (the STA interface is not associated).
     WiFi.mode(WIFI_AP_STA);
-    WiFi.setSleep(false);
+    applyWifiPowerSave();
     if (!WiFi.softAP(DEFAULT_AP_SSID, DEFAULT_AP_PASS, channel, 0, DEFAULT_AP_MAX_CONN)) {
         Serial.println("[WebPortal] SoftAP start FAILED");
     }
@@ -146,7 +170,7 @@ void WebPortal::stopAccessPoint() {
     _dnsServer.stop();
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);
+    applyWifiPowerSave();
     _apActive = false;
     Serial.println("[WebPortal] SoftAP stopped (station link active)");
 }

@@ -1,1 +1,3 @@
 .pio
+extensions.json
+firmware*.bin

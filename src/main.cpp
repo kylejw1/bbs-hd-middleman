@@ -77,15 +77,27 @@ void setup() {
     // Initialize dual UART serial bridge (Controller & Display)
     Bridge.begin();
 
-    // Initialize Wi-Fi Access Point & Web Portal
-    Portal.begin();
-
     #if BLE_TRANSPORT_ENABLED
-    // BLE transport so the hosted (HTTPS) dashboard can reach the bike without
-    // joining its Wi-Fi. Advertises regardless of Wi-Fi mode; only one client is
-    // expected at a time.
+    // Bluetooth MUST be enabled before Wi-Fi.
+    //
+    // This is not about memory (there is 200 KB free either way). Arduino-ESP32
+    // 2.0.17 ships IDF 4.4, where coex_enable() aborts inside
+    // esp_bt_controller_enable() when esp_wifi_set_ps(WIFI_PS_NONE) has already
+    // been called -- IDFGH-8094, see espressif/esp-idf#9595 and
+    // h2zero/NimBLE-Arduino#437.
+    //
+    // WebPortal calls WiFi.setSleep(false) for dashboard latency, so bringing
+    // Wi-Fi up first lands squarely in that bug: abort() in coex_core_enable,
+    // setup() never reaches loop(), and the display loses its 1200-baud
+    // pass-through and throws a communication error. Enabling Bluetooth first
+    // keeps coexistence on its supported path.
     Ble.begin();
     #endif
+
+    // Initialize Wi-Fi Access Point & Web Portal
+    Portal.begin();
+    Serial.printf("[System] After Wi-Fi/HTTP init: free heap %u, largest block %u\n",
+                  ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
     // Attempt initial query of controller firmware version
     uint8_t maj = 0, min = 0, pat = 0, cfgVer = 0;

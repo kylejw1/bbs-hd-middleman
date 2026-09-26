@@ -194,13 +194,15 @@ CONTROLLER_TX -> 18 -| [11]                             [34] |- GPIO 37
 
 The dashboard above is served *by the middleman itself*, so it already works with no internet and no router — you just have to join the bike's own Wi-Fi. If you would rather keep your phone on its normal network, use the hosted copy instead:
 
-1. Open **https://kylejw1.github.io/bbs-hd-middleman/** in **Chrome** (Android, or desktop Chrome/Edge).
+1. Open **https://kylejw1.github.io/bbs-hd-middleman/** in **Chrome** (Android, or desktop Chrome/Edge). If you use **Brave**, read the note below first — it ships with Web Bluetooth switched off.
 2. Tap **Bluetooth** in the header and pick **BBSHD-Middleman** from the browser's device list.
 3. The page is now talking to the bike over Bluetooth LE. Add it to your home screen and it keeps working with no network at all — the app shell is cached on first visit.
 
 Notes and limits:
 
 * **Chromium only.** Safari on iOS has no Web Bluetooth, so iPhones must use the on-device Wi-Fi dashboard from step 2 above. That copy is always available and is never going away.
+* **Brave needs Web Bluetooth enabled by hand.** Brave is Chromium-based but ships the API disabled, so the header shows **BT: Unsupported** and `navigator.bluetooth` is undefined. Turn it on with `brave://flags/#enable-web-bluetooth` → **Enabled**, then restart the browser. Launching Brave with `--enable-features=WebBluetooth` does the same thing. This is Brave's deliberate choice, not something the page can work around.
+* The page checks whether the browser exposes Web Bluetooth and says **BT: Unsupported** if it does not, rather than offering a button that cannot work. If you see that, use the Wi-Fi dashboard instead.
 * The browser remembers the device, so a revisit reconnects on its own. If it does not, tap **Bluetooth** again.
 * Bluetooth and the SoftAP share the ESP32's single radio. Bluetooth is meant to replace the Wi-Fi dashboard, not to run alongside it under heavy polling.
 * **Firmware updates are the one exception.** A `.bin` is far too large for the Bluetooth link, and a secure page cannot talk to the device's plain-HTTP address, so the hosted copy's Firmware tab just tells you where to go. To flash, join `BBS-FW-Middleman` and open `http://192.168.4.1/` (or `http://bbshd.local/` if the middleman is on your home network) and upload from there.

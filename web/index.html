@@ -958,6 +958,11 @@ const Ble = {
   inflight: new Map(),
   pushBuf: null,
   lastPushMs: 0,
+  // Set while the user has deliberately disconnected, so the auto-reconnect
+  // loop leaves the link alone.
+  manualDisconnect: false,
+  retryTimer: null,
+  retryDelayMs: 2000,
 };
 
 function bleSupported() {
@@ -994,32 +999,53 @@ function onBleButton() {
   });
 }
 
+// Re-acquire a device the user already granted access to, with no picker.
+//
+// This is the only route to a silent reconnect, and it depends on
+// navigator.bluetooth.getDevices(), which is still behind a flag in Chrome
+// (chrome://flags/#enable-web-bluetooth-new-permissions-backend) and has no
+// equivalent at all in browsers that never implemented it. When it is missing
+// there is no way to skip the chooser: Web Bluetooth requires a user gesture to
+// grant access the first time, by design.
+async function bleRecallDevice() {
+  if (!navigator.bluetooth.getDevices) return null;
+  try {
+    const known = await navigator.bluetooth.getDevices();
+    const savedId = localStorage.getItem(BLE_DEVICE_KEY);
+    return known.find((d) => d.id === savedId) || known[0] || null;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function bleConnect(interactive) {
   if (!bleSupported()) {
     throw new Error('Web Bluetooth is not available in this browser (use Chrome on Android or desktop)');
   }
 
-  let device = Ble.device;
+  Ble.manualDisconnect = false;
+  clearTimeout(Ble.retryTimer);
 
-  // A previously granted device can be re-acquired without a user gesture, so a
-  // revisit reconnects on its own.
-  if (!device && navigator.bluetooth.getDevices) {
+  const remembered = Ble.device || await bleRecallDevice();
+
+  if (remembered) {
     try {
-      const known = await navigator.bluetooth.getDevices();
-      const savedId = localStorage.getItem(BLE_DEVICE_KEY);
-      device = known.find((d) => d.id === savedId) || known[0] || null;
-    } catch (e) {
-      device = null;
+      await bleAttach(remembered);
+      return true;
+    } catch (err) {
+      // A remembered device that is switched off, out of range or has been
+      // forgotten must not become a dead end, so fall through to the picker
+      // rather than leaving the user with a button that always fails.
+      if (!interactive) return false;
     }
   }
 
-  if (!device) {
-    if (!interactive) return false;   // no permission yet; wait for a click
-    device = await navigator.bluetooth.requestDevice({
-      filters: [{ services: [BLE_SERVICE_UUID] }],
-      optionalServices: [BLE_SERVICE_UUID],
-    });
-  }
+  if (!interactive) return false;
+
+  const device = await navigator.bluetooth.requestDevice({
+    filters: [{ services: [BLE_SERVICE_UUID] }],
+    optionalServices: [BLE_SERVICE_UUID],
+  });
 
   await bleAttach(device);
   return true;
@@ -1028,6 +1054,9 @@ async function bleConnect(interactive) {
 async function bleAttach(device) {
   updateBleStatus('Connecting', 'badge-warning');
 
+  // removeEventListener first: the same device object is reused across
+  // reconnects, and re-adding would stack duplicate handlers.
+  device.removeEventListener('gattserverdisconnected', bleOnDisconnected);
   device.addEventListener('gattserverdisconnected', bleOnDisconnected);
 
   const server = await device.gatt.connect();
@@ -1084,6 +1113,8 @@ async function bleAttach(device) {
   }
 
   updateBleStatus('Connected', 'badge-active');
+  Ble.retryDelayMs = 2000;
+  Ble.manualDisconnect = false;
   showToast('Connected to ' + (device.name || 'the middleman')
             + (info.fw ? ' (fw ' + info.fw + ')' : '') + ' over Bluetooth');
   refreshDashboardNow();
@@ -1126,10 +1157,31 @@ async function bleAuthenticate() {
 }
 
 function bleDisconnect() {
+  // Deliberate, so the auto-reconnect loop must not fight the user.
+  Ble.manualDisconnect = true;
+  clearTimeout(Ble.retryTimer);
   if (Ble.device && Ble.device.gatt && Ble.device.gatt.connected) {
     Ble.device.gatt.disconnect();
   }
   bleOnDisconnected();
+}
+
+// Auto-reconnect: once a device has been granted, the page can reconnect to it
+// with no picker and no user gesture, so a dropped link (walked out of range,
+// bike powered off, phone slept) should heal itself rather than needing a tap.
+function scheduleBleRetry() {
+  if (Ble.manualDisconnect || !Ble.device || Ble.connected) return;
+  clearTimeout(Ble.retryTimer);
+  Ble.retryTimer = setTimeout(async () => {
+    if (Ble.manualDisconnect || Ble.connected || !Ble.device) return;
+    try {
+      await bleAttach(Ble.device);
+      showToast('Reconnected to the middleman');
+    } catch (e) {
+      Ble.retryDelayMs = Math.min(Ble.retryDelayMs * 2, 30000);
+      scheduleBleRetry();
+    }
+  }, Ble.retryDelayMs);
 }
 
 function bleOnDisconnected() {
@@ -1146,6 +1198,7 @@ function bleOnDisconnected() {
   Ble.inflight.clear();
 
   updateBleStatus('Off', 'badge-neutral');
+  scheduleBleRetry();
 }
 
 function bleOnNotification(event) {
@@ -1359,10 +1412,20 @@ function initBluetoothTransport() {
     updateBleStatus('Off', 'badge-neutral');
     // Silent reconnect if this origin already holds permission for the device.
     bleConnect(false).catch(() => { updateBleStatus('Off', 'badge-neutral'); });
-  } else {
-    // Served by the ESP32: HTTP is already working, so BLE stays opt-in.
-    updateBleStatus('Off', 'badge-neutral');
+    return;
   }
+
+  // Served by the ESP32 over plain HTTP, which no browser treats as a secure
+  // context -- so navigator.bluetooth is not exposed on this page no matter how
+  // capable the browser is. Hide the control rather than offer a button that can
+  // only fail here; the Wi-Fi transport already works.
+  //
+  // The BT PIN button deliberately stays: setting or clearing the PIN from this
+  // page is the documented recovery path when the PIN is forgotten.
+  const connectButton = document.getElementById('btn-ble');
+  const connectPill = document.getElementById('status-ble');
+  if (connectButton) connectButton.style.display = 'none';
+  if (connectPill) connectPill.style.display = 'none';
 }
 
 function showToast(msg) {
