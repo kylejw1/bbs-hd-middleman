@@ -202,11 +202,23 @@
 #define LCD_CURVE_MAX_CADENCE_RPM  120
 #endif
 
-// When an MPU-6050 is fitted, the round display alternates between the bike
-// telemetry page and the IMU page on this period. There is no room for both at
-// once on a 240 px circle.
+// Which page the round display shows, and whether it alternates.
+//
+//   0 = bike telemetry page (PAS curve, cadence, targets)
+//   1 = IMU readout page (accel / gyro / temperature / bubble level)
+//
+// There is no room for both at once on a 240 px circle, so LCD_START_PAGE picks
+// the one the display sits on. It currently favours the IMU page, because that
+// is what is being brought up.
+//
+// LCD_PAGE_MS is how long to hold each page before switching. **0 disables the
+// alternating entirely** and pins the display to LCD_START_PAGE. The cycling
+// code is all still there and still correct -- it just never fires.
+#ifndef LCD_START_PAGE
+#define LCD_START_PAGE  1
+#endif
 #ifndef LCD_PAGE_MS
-#define LCD_PAGE_MS  5000
+#define LCD_PAGE_MS     0
 #endif
 
 // The IMU page draws a live bubble level, so it refreshes faster than the bike

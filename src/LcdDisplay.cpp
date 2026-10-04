@@ -22,7 +22,7 @@ LcdDisplay::LcdDisplay()
     , _spritesOk(false)
     , _lastRefreshMs(0)
 #if LCD_IMU_PAGE
-    , _page(0)
+    , _page(LCD_START_PAGE)
     , _lastPageSwitchMs(0)
 #endif
     , _dirtyRow0(true)
@@ -95,18 +95,23 @@ void LcdDisplay::process() {
     uint32_t now = millis();
 
 #if LCD_IMU_PAGE
-    // Alternate between the bike page and the IMU page. This only ever leaves
-    // page 0 when an MPU-6050 actually answered on the bus, so a board without
-    // one behaves exactly as it did before.
-    if (Mpu.isPresent()) {
+    // Page selection. With LCD_PAGE_MS == 0 the display is pinned to
+    // LCD_START_PAGE and never alternates; the cycling path below is intact and
+    // simply never fires. When cycling IS on it only leaves page 0 while an
+    // MPU-6050 actually answered on the bus, so a board without one behaves as
+    // it did before.
+    if (LCD_PAGE_MS > 0 && Mpu.isPresent()) {
         if (now - _lastPageSwitchMs >= LCD_PAGE_MS) {
             _lastPageSwitchMs = now;
             _page ^= 1;
             _invalidateSnapshot();
         }
-    } else if (_page != 0) {
-        _page = 0;
-        _invalidateSnapshot();
+    } else {
+        const uint8_t want = (LCD_PAGE_MS > 0) ? 0 : (uint8_t)LCD_START_PAGE;
+        if (_page != want) {
+            _page = want;
+            _invalidateSnapshot();
+        }
     }
 
     // The IMU page carries a live bubble level, so it runs faster than the bike
