@@ -64,6 +64,13 @@ public:
     bool getCachedLights() const;
     uint8_t getCachedOperationMode() const;
 
+    // Direct target-telemetry getters (from the 0xEC debug frame).
+    // All return 0 when hasTargetTelemetry() is false.
+    uint8_t  getCachedTargetCurrentPct() const;
+    uint8_t  getCachedTargetSpeedPct() const;
+    uint16_t getCachedCadenceRpmX10() const;    // RPM × 10
+    uint16_t getCachedMotorRpmX10() const;      // RPM × 10
+
     // Check connectivity
     bool isDisplayActive() const;
     bool isControllerActive() const;

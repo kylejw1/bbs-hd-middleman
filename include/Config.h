@@ -4,25 +4,42 @@
 #include <Arduino.h>
 
 // =============================================================================
-// HARDWARE PIN ASSIGNMENTS (44-Pin ESP32-S3 DevKitC-1)
+// HARDWARE PIN ASSIGNMENTS
 // =============================================================================
-// Note: ESP32-S3 GPIOs operate at 3.3V logic levels.
+// Defaults are for the 44-pin ESP32-S3 DevKitC-1. Every pin below is
+// #ifndef-guarded so a different board can override them from its own PlatformIO
+// environment with -D flags, without editing this file -- see [env:gc9a01-esp32]
+// in platformio.ini for the classic-ESP32 mapping.
+//
+// Note: ESP32 GPIOs operate at 3.3V logic levels.
 // Bafang UART communication is 5V TTL logic.
 // A bi-directional logic level shifter (or resistor voltage divider on RX lines)
-// is recommended between the ESP32-S3 and the Bafang 5V lines.
+// is recommended between the ESP32 and the Bafang 5V lines.
 
 // Controller UART (UART1) - connects to Bafang BBS-HD controller
 #define CONTROLLER_UART_NUM     1
+#ifndef CONTROLLER_RX_PIN
 #define CONTROLLER_RX_PIN       17   // Connect to Controller TX (via level shifter)
+#endif
+#ifndef CONTROLLER_TX_PIN
 #define CONTROLLER_TX_PIN       18   // Connect to Controller RX (via level shifter)
+#endif
 
 // Display UART (UART2) - connects to Bafang HMI Display (500C, 850C, DPC-18, etc.)
 #define DISPLAY_UART_NUM        2
+#ifndef DISPLAY_RX_PIN
 #define DISPLAY_RX_PIN          15   // Connect to Display TX (via level shifter)
+#endif
+#ifndef DISPLAY_TX_PIN
 #define DISPLAY_TX_PIN          16   // Connect to Display RX (via level shifter)
+#endif
 
-// Optional Status / Activity LED
+// Optional Status / Activity LED.
+// Override with -DSTATUS_LED_PIN=<n>, or define NO_STATUS_LED to compile the
+// heartbeat out entirely on boards with no free LED pin.
+#if !defined(STATUS_LED_PIN) && !defined(NO_STATUS_LED)
 #define STATUS_LED_PIN          48   // On-board RGB / status LED on ESP32-S3 DevKit
+#endif
 
 // Standard Bafang UART baud rate: 1200 baud, 8 data bits, no parity, 1 stop bit (8N1)
 #define BAFANG_BAUD_RATE        1200
@@ -142,5 +159,55 @@
 // the link does not buy a fresh budget of attempts.
 #define BLE_AUTH_MAX_ATTEMPTS   5
 #define BLE_AUTH_LOCKOUT_MS     30000
+
+// =============================================================================
+// LCD DISPLAY (optional)
+// =============================================================================
+// Compile in one of the two TFT targets by setting a build flag in
+// platformio.ini (see the [env:st7789] / [env:gc9a01] environments):
+//
+//   -DLCD_DISPLAY_ST7789   — 2.25" strip, 76×284, landscape → 284×76
+//   -DLCD_DISPLAY_GC9A01   — 1.28" round, 240×240
+//
+// Neither defined → LcdDisplay stubs out to empty calls, zero overhead.
+//
+// -----------------------------------------------------------------------------
+// SPI PINS ARE NOT SET HERE. They live in platformio.ini as TFT_eSPI flags:
+//
+//     -DTFT_MOSI=11  -DTFT_SCLK=12  -DTFT_CS=10  -DTFT_DC=9  -DTFT_RST=8
+//     -DSPI_FREQUENCY=40000000   (SPI clock; GC9A01 uses 27000000)
+//
+// TFT_eSPI reads those at library compile time, so a plain #define in this file
+// could never reach it. There used to be LCD_*_PIN defines here that looked like
+// the pin configuration and were referenced nowhere -- editing them silently did
+// nothing. Change the -DTFT_* flags in the environment you are building, or add
+// a new environment with your own pin set.
+// -----------------------------------------------------------------------------
+// Backlight: neither panel is driven from here. Wire BL to 3V3 for always-on, or
+// add a -DTFT_BL=<gpio> flag and call ledcWrite() yourself for PWM dimming.
+// -----------------------------------------------------------------------------
+
+// How often the display is refreshed (ms). 200 ms = 5 fps is plenty for a bike.
+#ifndef LCD_REFRESH_MS
+#define LCD_REFRESH_MS  200
+#endif
+
+// Maximum cadence RPM shown on the X axis of the PAS curve chart.
+// 120 is the BBSHD nominal max; set lower if your cadence sensor reads lower.
+#ifndef LCD_CURVE_MAX_CADENCE_RPM
+#define LCD_CURVE_MAX_CADENCE_RPM  120
+#endif
+
+#if defined(LCD_DISPLAY_ST7789)
+// ST7789 at 76×284 in landscape = 284 wide × 76 tall.
+// Rotation 1 maps the short edge (76) to height and long edge (284) to width.
+#define LCD_ROTATION        1
+#define LCD_DISPLAY_NAME    "ST7789"
+
+#elif defined(LCD_DISPLAY_GC9A01)
+// GC9A01 240×240 round. No rotation needed (it's a circle).
+#define LCD_ROTATION        0
+#define LCD_DISPLAY_NAME    "GC9A01"
+#endif
 
 #endif // CONFIG_H

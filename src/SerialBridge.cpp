@@ -15,6 +15,8 @@ SerialBridge::SerialBridge()
     , _lastDisplayOpcode(0)
     , _configVersion(BBS_FW_CONFIG_VERSION)
     , _queuedCount(0)
+    , _cachedConfig{}
+    , _hasCachedConfig(false)
 {
 }
 
@@ -763,6 +765,9 @@ bool SerialBridge::readConfig(BbsFwConfig& config, uint32_t timeoutMs) {
                     }
                     Telemetry.addEvent(2, 0, false); // EVT_MSG_CONFIG_READ_DONE
                     Debug.tracef("readConfig OK: ver=%d len=%d", ver, len);
+                    // Cache for LCD PAS curve rendering
+                    _cachedConfig = config;
+                    _hasCachedConfig = true;
                 } else {
                     Debug.trace("readConfig FAILED: checksum mismatch");
                 }
@@ -838,6 +843,9 @@ bool SerialBridge::writeConfig(const BbsFwConfig& config, uint32_t timeoutMs) {
         if (success) {
             Telemetry.addEvent(4, 0, false); // EVT_MSG_CONFIG_WRITE_DONE
             Debug.tracef("writeConfig OK (ver=%d)", ver);
+            // Cache for LCD PAS curve rendering
+            _cachedConfig = config;
+            _hasCachedConfig = true;
         } else {
             Debug.trace("writeConfig FAILED: controller returned status=0");
         }
@@ -963,4 +971,66 @@ void SerialBridge::injectOperationMode(uint8_t mode) {
 
     _controllerSerial.write(pkt, 4);
     Telemetry.updateOperationMode(mode);
+}
+
+// =============================================================================
+// Cached config accessors (for LcdDisplay PAS curve rendering)
+// =============================================================================
+
+uint8_t SerialBridge::getConfigMaxCurrentAmps() const {
+    if (!_hasCachedConfig) return 30; // BBSHD nominal default
+    return _cachedConfig.isV6() ? _cachedConfig.v6.max_current_amps
+                                 : _cachedConfig.v5.max_current_amps;
+}
+
+uint8_t SerialBridge::getConfigPasKeepCurrentPct() const {
+    if (!_hasCachedConfig) return 60;
+    return _cachedConfig.isV6() ? _cachedConfig.v6.pas_keep_current_percent
+                                 : _cachedConfig.v5.pas_keep_current_percent;
+}
+
+uint8_t SerialBridge::getConfigPasKeepCurrentRpm() const {
+    if (!_hasCachedConfig) return 70;
+    return _cachedConfig.isV6() ? _cachedConfig.v6.pas_keep_current_cadence_rpm
+                                 : _cachedConfig.v5.pas_keep_current_cadence_rpm;
+}
+
+uint8_t SerialBridge::getLevelCurrentPct(uint8_t mode, uint8_t idx) const {
+    if (idx >= 10) return 0;
+    if (!_hasCachedConfig) {
+        // Default ramp: level 0 = off, levels 1-9 scale with index
+        if (idx == 0) return 0;
+        return (uint8_t)min(100, (int)idx * 11 + 10);
+    }
+    if (_cachedConfig.isV6()) {
+        return mode ? _cachedConfig.v6.sport_levels[idx].target_current_percent
+                    : _cachedConfig.v6.standard_levels[idx].target_current_percent;
+    }
+    return mode ? _cachedConfig.v5.sport_levels[idx].target_current_percent
+                : _cachedConfig.v5.standard_levels[idx].target_current_percent;
+}
+
+uint8_t SerialBridge::getLevelCadencePct(uint8_t mode, uint8_t idx) const {
+    if (idx >= 10) return 100;
+    if (!_hasCachedConfig) return 100;
+    if (_cachedConfig.isV6()) {
+        return mode ? _cachedConfig.v6.sport_levels[idx].max_cadence_percent
+                    : _cachedConfig.v6.standard_levels[idx].max_cadence_percent;
+    }
+    return mode ? _cachedConfig.v5.sport_levels[idx].max_cadence_percent
+                : _cachedConfig.v5.standard_levels[idx].max_cadence_percent;
+}
+
+uint8_t SerialBridge::getLevelFlags(uint8_t mode, uint8_t idx) const {
+    if (idx >= 10) return 0;
+    if (!_hasCachedConfig) {
+        // Level 0 has PAS disabled; all others have PAS enabled (flag bit 0)
+        return (idx == 0) ? 0x00 : 0x01;
+    }
+    if (_cachedConfig.isV6()) {
+        return mode ? _cachedConfig.v6.sport_levels[idx].flags
+                    : _cachedConfig.v6.standard_levels[idx].flags;
+    }
+    return mode ? _cachedConfig.v5.sport_levels[idx].flags
+                : _cachedConfig.v5.standard_levels[idx].flags;
 }

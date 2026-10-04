@@ -6,6 +6,7 @@
 #include "WebPortal.h"
 #include "BlePortal.h"
 #include "DebugLog.h"
+#include "LcdDisplay.h"
 #include <esp_log.h>
 #include <esp_ota_ops.h>
 
@@ -74,6 +75,9 @@ void setup() {
     // Initialize telemetry subsystem
     Telemetry.begin();
 
+    // Initialize optional TFT LCD display (no-op if not compiled in)
+    Display.begin();
+
     // Initialize dual UART serial bridge (Controller & Display)
     Bridge.begin();
 
@@ -136,7 +140,10 @@ void loop() {
     Ble.process();
     #endif
 
-    // 4. Heartbeat LED animation
+    // 4. Update optional TFT LCD display (rate-limited; no-op if not compiled in)
+    Display.process();
+
+    // 5. Heartbeat LED animation
     uint32_t now = millis();
     uint32_t blinkInterval = 1000; // Normal idle: 1s
 

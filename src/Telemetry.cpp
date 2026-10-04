@@ -241,6 +241,22 @@ uint8_t TelemetryTracker::getCachedOperationMode() const {
     return _operationMode;
 }
 
+uint8_t TelemetryTracker::getCachedTargetCurrentPct() const {
+    return _targetCurrentPercent;
+}
+
+uint8_t TelemetryTracker::getCachedTargetSpeedPct() const {
+    return _targetSpeedPercent;
+}
+
+uint16_t TelemetryTracker::getCachedCadenceRpmX10() const {
+    return _cadenceRpmX10;
+}
+
+uint16_t TelemetryTracker::getCachedMotorRpmX10() const {
+    return _motorRpmX10;
+}
+
 bool TelemetryTracker::isDisplayActive() const {
     return (millis() - _lastDisplayRxMs) < 2500;
 }

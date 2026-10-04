@@ -275,6 +275,7 @@ Every dashboard call goes through `apiFetch()` in `web/index.html`, which is the
 │   ├── ApiHandlers.h      # Transport-neutral ApiRequest/ApiResponse + route table
 │   ├── BleProtocol.h      # GATT UUIDs + BLE frame layout (mirrored in web/index.html)
 │   ├── BlePortal.h        # BLE GATT server, deferred API dispatch
+│   ├── LcdDisplay.h       # Optional TFT subsystem (ST7789 / GC9A01 targets)
 │   ├── BbsFwProtocol.h    # Opcodes, structs, bitmasks, checksums, JSON serialization
 │   ├── Telemetry.h        # Thread-safe metrics tracker & event log ring buffer
 │   ├── SerialBridge.h     # Dual UART engine, state machine, mock synthesizer
@@ -284,6 +285,7 @@ Every dashboard call goes through `apiFetch()` in `web/index.html`, which is the
     ├── main.cpp           # Setup, cooperative loop, status LED heartbeat
     ├── ApiHandlers.cpp    # API_ROUTES table + route/query helpers
     ├── BlePortal.cpp      # Bluedroid GATT server, request reassembly, notify chunking
+    ├── LcdDisplay.cpp     # Sprite regions, PAS curve + cursor, numeric tiles
     ├── BbsFwProtocol.cpp  # JSON <-> struct converters, event log string table
     ├── Telemetry.cpp      # Metric calculations, speed math, JSON builder
     ├── SerialBridge.cpp   # Non-blocking UART streaming, arbitration logic
@@ -293,6 +295,51 @@ Every dashboard call goes through `apiFetch()` in `web/index.html`, which is the
 ---
 
 ## 5. Build, Flash & Validation
+
+### PlatformIO Environments
+Five environments. **`default_envs` is pinned to `esp32-s3-devkitc-1`**, so a bare `pio run` only ever touches that one — without it, `pio run -t upload` would flash *every* environment in the file.
+
+| Env | Command | What it is |
+| :--- | :--- | :--- |
+| `esp32-s3-devkitc-1` | `pio run -t upload` | Production. BLE off, no LCD. |
+| `ble` | `pio run -e ble -t upload` | Experimental BLE transport. Own build dir. |
+| `st7789` | `pio run -e st7789 -t upload` | 2.25" 76×284 strip, mounted landscape. |
+| `gc9a01` | `pio run -e gc9a01 -t upload` | 1.28" round 240×240, on the S3. |
+| `gc9a01-esp32` | `pio run -e gc9a01-esp32 -t upload` | 1.28" round 240×240, on a classic ESP32. |
+
+Each has its own `.pio/build/<env>` directory, so switching never risks flashing a stale artifact from another mode.
+
+**One `setup()`/`loop()` per `src/` tree.** A standalone tool that defines its own pair needs its own environment with a `build_src_filter` that excludes it from the firmware builds, or *every* environment fails to link with `multiple definition of 'setup()'`.
+
+### Classic ESP32 ("ESP-32S" / ESP32-WROOM-32, 30-pin)
+`[env:gc9a01-esp32]` targets a classic ESP32 rather than an S3, which changes four things:
+
+* **Different chip target**: `board = esp32dev`, and the S3-only `-DARDUINO_USB_CDC_ON_BOOT` / `-DARDUINO_USB_MODE` flags are **absent**. There is no native USB on this chip — `Serial` goes out over UART0 through the on-board USB-serial bridge.
+* **4MB flash, not 8MB**: `default_8MB.csv` places app0 at 0x10000 with size 0x330000, which runs off the end of a 4MB part. That environment uses `min_spiffs.csv` (two 1.92MB OTA slots). Note `default.csv` gives only 1.31MB per slot, which the **BLE build (1.57MB) does not fit** — the LCD build alone does.
+* **Different LCD pins, and this is the dangerous one**: on classic ESP32, **GPIO 6–11 are the SPI flash bus**. The S3 default set (MOSI 11, CS 10, DC 9, RST 8) sits directly on top of it and will crash the chip or corrupt flash; SCLK was on GPIO12, the MTDI strapping pin that selects flash voltage. That environment remaps all five.
+* **No GPIO48**: classic GPIOs stop at 39, so the status LED moves to GPIO25.
+
+Classic ESP32 pin hazards:
+
+| Range | Hazard |
+| :--- | :--- |
+| 0, 2, 5, 12, 15 | strapping |
+| 6–11 | SPI flash bus — never use |
+| 34, 35, 36, 39 | input-only, cannot drive |
+| 1, 3 | UART0 console |
+
+GPIO16/17 are free on a WROOM but are PSRAM pins on WROVER modules. All board pins are `#ifndef`-guarded in [`Config.h`](file:///home/kyle/dev/bbs-hd-middleman/include/Config.h), so a new board is a new environment with `-D` overrides — not an edit to shared code. `-DNO_STATUS_LED` compiles the heartbeat out entirely.
+
+### Optional TFT Display (`LcdDisplay`)
+Compile-time selected by `-DLCD_DISPLAY_ST7789` or `-DLCD_DISPLAY_GC9A01`; neither defined → the class stubs to empty inline calls with zero cost. Both targets drive the same `LcdDisplay` code, differing only in geometry constants in [`include/LcdDisplay.h`](file:///home/kyle/dev/bbs-hd-middleman/include/LcdDisplay.h).
+
+* **Pins** (HSPI, 3.3 V direct — no level shifting): MOSI 11, SCLK 12, CS 10, DC 9, RST 8, backlight always-on. Free from the Bafang UARTs on 15–18. TFT_eSPI is configured entirely from `platformio.ini` build flags with `USER_SETUP_LOADED=1`, so the library's own `User_Setup.h` is bypassed; `-DTOUCH_CS=-1` exists only to suppress its "TOUCH_CS pin not defined" warning.
+* **Rendering**: three `TFT_eSprite` regions (two text rows + chart) with dirty-flag diffing, pushed only when their source values change. Refresh is gated by `LCD_REFRESH_MS` (200 ms).
+* **Memory is the real cost**: the sprites are ~43 KB on ST7789 and ~115 KB on GC9A01, allocated in `begin()` from the heap. This is why `Display.begin()` runs *before* Wi-Fi and BLE in `setup()`. Allocation failure disables the display cleanly rather than pushing an unallocated sprite.
+* **GC9A01 is circular, and only the inscribed r=120 circle is visible.** A row `w` wide is fully visible only where `|y-120| <= sqrt(120² - (w/2)²)`, which for a 240 px row is true only at `y=120`. So that target goes **two-across, inset**, not four-across like the ST7789: rows at x=30, and the chart 192 px wide at x=24, y=122..214 with a centred status line. Four-across rows at the top of the circle are hidden behind the bezel. Do not "simplify" both targets to one layout.
+* **`_computePasCurrent()` mirrors `computePasTargetCurrent()` in [`web/index.html`](file:///home/kyle/dev/bbs-hd-middleman/web/index.html)** — it is the only place the PAS curve model is duplicated, so the two must be changed together. It must short-circuit to a flat maximum for `ASSIST_FLAG_PAS_VARIABLE` levels, exactly as the JS does.
+* Called from `loop()` only, never blocking: `_tft.init()` and sprite allocation happen once in `setup()`.
+* Init diagnostics go to `Serial.printf`, not `Debug.trace`, because tracing is off by default and these are the only boot-time evidence the panel came up.
 
 ### PlatformIO Environment
 * **Platform**: `espressif32@6.12.0` (Use this exact version to ensure stable Xtensa toolchains).
