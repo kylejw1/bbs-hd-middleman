@@ -301,31 +301,81 @@
 #define MPU_READ_HZ         100
 #endif
 
-// Complementary filter weights, per axis, because the two axes have very
-// different problems.
+// -----------------------------------------------------------------------------
+// Pitch estimator tuning -- implements bike_pitch_algorithm.md
 //
-// PITCH is corrected slowly. The accelerometer's pitch reading is corrupted by
-// the bike's own acceleration -- on the flat at 2 m/s^2 it reads 11.5 degrees
-// off -- so the filter must treat the accelerometer as a slow drift reference
-// and let the gyro carry multi-second accel and braking episodes. 0.999 at
-// 100 Hz is a ~10 s time constant.
-//
-// ROLL is corrected quickly. Lateral acceleration on a bicycle is small, so the
-// accelerometer's roll reference is trustworthy and a fast correction is what
-// keeps gyro drift out. 0.98 is ~0.5 s.
-#ifndef MPU_PITCH_ALPHA
-#define MPU_PITCH_ALPHA     0.999f
-#endif
-#ifndef MPU_ROLL_ALPHA
-#define MPU_ROLL_ALPHA      0.98f
+// Adaptive-gain complementary filter: the gyro propagates attitude every
+// sample, and the accelerometer corrects it with a confidence weight that
+// collapses toward zero whenever the accelerometer cannot be trusted
+// (accelerating, braking, rough road). At zero weight the estimate is pure gyro
+// integration, which is immune to linear acceleration by construction.
+// -----------------------------------------------------------------------------
+
+// Proportional gain on the accelerometer correction. 0.03 at 100 Hz is a ~0.3 s
+// time constant during steady riding.
+#ifndef MPU_KP
+#define MPU_KP              0.03f
 #endif
 
-// One-pole low-pass on the gravity-normalised Z axis, in milliseconds. Bumps and
-// suspension put vertical acceleration on Z so it has to be averaged out, while
-// a hill's pitch does not change on this timescale. This feeds the
-// acceleration-immune pitch reference -- see Mpu6050.cpp::fetch().
-#ifndef MPU_AZ_LP_MS
-#define MPU_AZ_LP_MS        1500
+// Integral gain for the online gyro bias estimate. Deliberately tiny: it tracks
+// thermal drift over minutes and must not chase the pitch itself.
+#ifndef MPU_KI
+#define MPU_KI              0.002f
+#endif
+
+// Normalised deviation of |f| from 1 g at which the magnitude weight has decayed
+// to exp(-0.5) ~ 0.61. 0.08 is about 0.8 m/s^2.
+#ifndef MPU_SIGMA_NORM
+#define MPU_SIGMA_NORM      0.08f
+#endif
+
+// Longitudinal residual gate, m/s^2. Below MPU_TAU_LOW the accelerometer is
+// fully trusted; above MPU_TAU_HIGH it is ignored entirely.
+//
+// This is the term that actually catches forward acceleration. The magnitude
+// weight above is nearly blind to it: horizontal acceleration shifts |f| by
+// only A^2/2g (2% at 2 m/s^2) while shifting f_x by A. The residual compares
+// f_x against the gravity component implied by the current pitch estimate, so
+// it sees A directly.
+#ifndef MPU_TAU_LOW
+#define MPU_TAU_LOW         0.30f
+#endif
+#ifndef MPU_TAU_HIGH
+#define MPU_TAU_HIGH        1.20f
+#endif
+
+// Gyro magnitude (rad/s) below which the bike counts as quiescent and the
+// online bias integrator is allowed to run. 0.05 rad/s is about 2.8 deg/s.
+#ifndef MPU_GYRO_QUIET
+#define MPU_GYRO_QUIET      0.05f
+#endif
+
+// Gravity, m/s^2.
+#ifndef MPU_GRAVITY
+#define MPU_GRAVITY         9.80665f
+#endif
+
+// Sign of the pitch rate about the body Y axis.
+//
+// With the document's frame -- X forward, Y left, Z up, right-handed -- a
+// nose-up rotation is NEGATIVE about +Y: rotating about +Y carries +X toward
+// -Z, which is nose down. The document's theta_dot = +omega_y therefore
+// disagrees with its own accelerometer convention (f_x = +g sin(theta) for nose
+// up, which is correct and which this driver follows). The gyro term is negated
+// here so the two agree; with the document's sign they fight each other, and
+// the estimate runs the wrong way exactly when the accelerometer is gated off.
+//
+// Flip to +1.0 if your sensor is mounted with Y to the right instead of left.
+#ifndef MPU_PITCH_GYRO_SIGN
+#define MPU_PITCH_GYRO_SIGN (-1.0f)
+#endif
+
+// Complementary filter weight for roll. The document specifies only the pitch
+// estimator, so roll keeps a plain fast filter: lateral acceleration on a
+// bicycle is small, so its accelerometer reference is trustworthy. 0.98 is
+// ~0.5 s at 100 Hz.
+#ifndef MPU_ROLL_ALPHA
+#define MPU_ROLL_ALPHA      0.98f
 #endif
 
 // Samples averaged at boot to measure gyro bias, the 1 g reference and the

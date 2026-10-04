@@ -76,12 +76,15 @@ private:
     Sample   _s             = {};
 
     // Measured at boot by calibrate().
-    float    _biasGx        = 0.0f;    // deg/s
+    float    _biasGx        = 0.0f;    // deg/s, static, all three axes
     float    _biasGy        = 0.0f;
     float    _biasGz        = 0.0f;
     float    _gRef          = 1.0f;    // measured 1 g, so gain error isn't tilt
-    float    _azLp          = 1.0f;    // low-passed, gravity-normalised az
-    float    _azLpCoef      = 0.0066f; // from MPU_AZ_LP_MS and MPU_READ_HZ
+
+    // Adaptive-fusion estimator state (bike_pitch_algorithm.md).
+    float    _pitchRad      = 0.0f;    // theta, radians, nose up positive
+    float    _rollRad       = 0.0f;    // phi, radians
+    float    _biasYOnline   = 0.0f;    // rad/s, integral term on the pitch axis
 };
 
 extern Mpu6050 Mpu;

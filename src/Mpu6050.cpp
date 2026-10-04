@@ -137,10 +137,6 @@ bool Mpu6050::begin() {
     _lastReadMs = millis();
     _rateMarkMs = _lastReadMs;
 
-    // One-pole coefficient for the az low-pass. alpha = dt / (tau + dt).
-    const float dtMs = 1000.0f / (float)MPU_READ_HZ;
-    _azLpCoef = dtMs / ((float)MPU_AZ_LP_MS + dtMs);
-
     calibrate();   // best effort — logs, and warns, if the bike was moving
 
     return true;
@@ -150,12 +146,16 @@ bool Mpu6050::begin() {
 // calibrate() — measure gyro bias, the 1 g reference and the starting attitude
 //
 // The bike must be stationary. Uncancelled gyro bias is what makes the pitch
-// drift during acceleration, because that is exactly when the filter is running
-// on the gyro alone with the accelerometer correction slowed right down.
+// drift during acceleration, because that is exactly when the fusion weight goes
+// to zero and the estimate is running on the gyro alone.
 //
-// Seeding the attitude here also resolves the branch that the Z-only pitch
-// reference loses: acos() is even in pitch, so it cannot tell a climb from a
-// descent, but a stationary accelerometer can.
+// Seeding the attitude here is not in bike_pitch_algorithm.md but the algorithm
+// needs it. Its residual gate compares f_x against g*sin(theta_pred), so
+// starting from theta_pred = 0 while parked on a slope makes r_x exceed
+// MPU_TAU_HIGH immediately and the accelerometer is rejected before it ever gets
+// a chance to correct -- a cold-start deadlock that the gyro cannot break
+// because a stationary bike produces no rotation to integrate. A stationary
+// accelerometer has no such ambiguity, so the estimate is seeded from it.
 // =============================================================================
 bool Mpu6050::calibrate() {
     int16_t raw[7];
@@ -194,19 +194,20 @@ bool Mpu6050::calibrate() {
     const float az0 = (float)(sAz * inv) / ACCEL_LSB_PER_G;
 
     // Normalise against the 1 g actually measured, so a sensor gain error does
-    // not show up as a permanent tilt.
+    // not show up as a permanent tilt nor as a permanent magnitude penalty.
     _gRef = sqrtf(ax0 * ax0 + ay0 * ay0 + az0 * az0);
     if (_gRef < 0.5f || _gRef > 1.5f) {
         Serial.printf("[MPU] implausible 1g reference %.3f g, using 1.000\n", _gRef);
         _gRef = 1.0f;
     }
 
-    _s.pitchDeg = atan2f(-ax0, az0) * RAD_TO_DEG;
-    _s.rollDeg  = atan2f( ay0, az0) * RAD_TO_DEG;
-
-    _azLp = az0 / _gRef;
-    if (_azLp >  1.0f) _azLp =  1.0f;
-    if (_azLp < -1.0f) _azLp = -1.0f;
+    // Seed the attitude. Same observation the runtime filter uses, and the same
+    // sign convention the document defines: nose up / climbing is POSITIVE, and
+    // the forward accelerometer axis reads +g*sin(theta) on a climb.
+    _pitchRad  = atan2f(ax0, sqrtf(ay0 * ay0 + az0 * az0));
+    _rollRad   = atan2f(ay0, az0);
+    _s.pitchDeg = _pitchRad * RAD_TO_DEG;
+    _s.rollDeg  = _rollRad  * RAD_TO_DEG;
 
     // Was it actually still? Peak-to-peak gyro spread is the cheapest honest
     // check, and a moving calibration bakes real rotation into the bias.
@@ -259,7 +260,22 @@ void Mpu6050::process() {
 }
 
 // =============================================================================
-// fetch() — scale one burst and run the two axis filters
+// fetch() — one cycle of the adaptive-fusion pitch estimator
+//
+// Implements bike_pitch_algorithm.md. The shape of it:
+//
+//   1. propagate pitch and roll on the gyro (immune to linear acceleration)
+//   2. form the accelerometer's pitch observation
+//   3. score how much the accelerometer can be trusted right now
+//   4. correct the propagated estimate by (gain x trust) of the innovation
+//   5. leak a little of that innovation into the gyro bias, but only at rest
+//
+// Step 3 is the whole point. Two independent detectors feed a weight in [0,1]:
+// a magnitude check on |f| versus 1 g, and a residual check comparing f_x
+// against the gravity component implied by the current pitch estimate. The
+// residual does the heavy lifting for acceleration and braking -- the magnitude
+// check is nearly blind to them, because horizontal acceleration perturbs |f|
+// only to second order (A^2/2g, so 2% at 2 m/s^2) while perturbing f_x directly.
 // =============================================================================
 bool Mpu6050::fetch() {
     int16_t raw[7];
@@ -278,47 +294,90 @@ bool Mpu6050::fetch() {
 
     const float dt = 1.0f / (float)MPU_READ_HZ;
 
-    // ---- Roll (first: the pitch reference below is de-leaned by it) --------
+    // ---- Roll --------------------------------------------------------------
     //
-    // Lateral acceleration on a bicycle is small, so the accelerometer's roll
-    // reference can be trusted and corrected quickly -- which is what keeps gyro
-    // drift out. Left deliberately on the ordinary formula.
-    const float accelRoll = atan2f(_s.ay, _s.az) * RAD_TO_DEG;
-    _s.rollDeg = MPU_ROLL_ALPHA * (_s.rollDeg - _s.gx * dt)
-               + (1.0f - MPU_ROLL_ALPHA) * accelRoll;
+    // The document specifies only the pitch estimator, so roll keeps a plain
+    // fast complementary filter: lateral acceleration on a bicycle is small, so
+    // its accelerometer reference is trustworthy. It feeds the pitch
+    // propagation through cos(phi)/sin(phi) below and the display.
+    const float phiAcc = atan2f(_s.ay, _s.az);          // radians
+    _rollRad = MPU_ROLL_ALPHA * (_rollRad - _s.gx * DEG_TO_RAD * dt)
+             + (1.0f - MPU_ROLL_ALPHA) * phiAcc;
+    _s.rollDeg = _rollRad * RAD_TO_DEG;
 
-    // ---- Pitch -------------------------------------------------------------
-    //
-    // Not atan2(-ax, sqrt(ay^2 + az^2)). The bike accelerates along its own X
-    // axis, and the sensor's Z axis is the bike's up, so those are perpendicular
-    // by construction: the bike's acceleration contributes nothing to az. On the
-    // flat at 2 m/s^2 the three-axis formula reads 11.5 degrees off while |a| is
-    // only 2% away from 1 g -- and a 0.02 g bump moves |a| by that same 2%, which
-    // is why gating on |a| cannot separate acceleration from a rough road -- but
-    // az still says cos(pitch) exactly.
-    //
-    // So the accelerometer's contribution comes from Z alone. acos() is even in
-    // pitch and loses the sign, which the gyro-propagated estimate supplies;
-    // calibrate() seeded it while the bike was known to be stationary.
-    //
-    // Vertical acceleration from bumps and suspension does land on Z, hence the
-    // low-pass. A hill's pitch does not change on a 1.5 s timescale.
-    const float azNorm = _s.az / _gRef;
-    _azLp += (azNorm - _azLp) * _azLpCoef;
+    // ---- Physical units for the estimator ----------------------------------
+    const float fx = _s.ax * MPU_GRAVITY;    // m/s^2
+    const float fy = _s.ay * MPU_GRAVITY;
+    const float fz = _s.az * MPU_GRAVITY;
 
-    // az = cos(pitch) * cos(roll), so divide the lean back out. Without this a
-    // 15 degree bank reads as 15.8 degrees of pitch rather than the 5 it is, and
-    // a long turn would drag the estimate with it.
-    const float cosRoll = cosf(_s.rollDeg * DEG_TO_RAD);
-    float azPitch = (cosRoll > 0.2f) ? (_azLp / cosRoll) : _azLp;
-    if (azPitch >  1.0f) azPitch =  1.0f;
-    if (azPitch < -1.0f) azPitch = -1.0f;
+    const float wx = _s.gx * DEG_TO_RAD;     // rad/s
+    const float wy = _s.gy * DEG_TO_RAD;
+    const float wz = _s.gz * DEG_TO_RAD;
 
-    const float gyroPitch   = _s.pitchDeg + _s.gy * dt;
-    const float pitchMagDeg = acosf(azPitch) * RAD_TO_DEG;
-    const float pitchRef    = (gyroPitch >= 0.0f) ? pitchMagDeg : -pitchMagDeg;
-    _s.pitchDeg = MPU_PITCH_ALPHA * gyroPitch
-                + (1.0f - MPU_PITCH_ALPHA) * pitchRef;
+    // ---- Step 2: kinematic propagation -------------------------------------
+    //
+    // theta_dot = wy*cos(phi) - wz*sin(phi). MPU_PITCH_GYRO_SIGN carries the
+    // sign correction explained in Config.h: the document's +omega_y contradicts
+    // its own accelerometer convention for this right-handed frame, and with the
+    // wrong sign the gyro and the accelerometer pull in opposite directions.
+    const float cosPhi = cosf(_rollRad);
+    const float sinPhi = sinf(_rollRad);
+    const float wyUnbiased = (wy - _biasYOnline) * MPU_PITCH_GYRO_SIGN;
+
+    const float thetaPred = _pitchRad + (wyUnbiased * cosPhi - wz * sinPhi) * dt;
+
+    // ---- Step 3: forward acceleration compensation (Case B: pure IMU) -------
+    //
+    // Case A of the document subtracts a differentiated wheel speed here. This
+    // build has no usable feed for that -- the controller's speed arrives over
+    // the 1200-baud link at roughly 1 Hz and in rpm, so differentiating it
+    // yields far more quantisation noise than signal. The adaptive weighting in
+    // Step 5 covers the same ground without the external input.
+    const float fxComp = fx;
+    const float fyComp = fy;
+    const float fzComp = fz;
+
+    // ---- Step 4: accelerometer observation and anomaly scores --------------
+    const float thetaAcc = atan2f(fxComp, sqrtf(fyComp * fyComp + fzComp * fzComp));
+
+    // Against the 1 g this sensor actually measures, so a gain error is not a
+    // permanent penalty on the magnitude weight.
+    const float fNorm = sqrtf(fxComp * fxComp + fyComp * fyComp + fzComp * fzComp);
+    const float gRef  = _gRef * MPU_GRAVITY;
+    const float epsA  = fabsf(fNorm - gRef) / gRef;
+
+    const float fxGrav = gRef * sinf(thetaPred);
+    const float rX     = fabsf(fxComp - fxGrav);
+
+    // ---- Step 5: adaptive trust --------------------------------------------
+    const float sigma = MPU_SIGMA_NORM;
+    const float wNorm = expf(-(epsA * epsA) / (2.0f * sigma * sigma));
+
+    float wRes;
+    if (rX <= MPU_TAU_LOW) {
+        wRes = 1.0f;
+    } else if (rX >= MPU_TAU_HIGH) {
+        wRes = 0.0f;
+    } else {
+        wRes = (MPU_TAU_HIGH - rX) / (MPU_TAU_HIGH - MPU_TAU_LOW);
+    }
+
+    const float w = wNorm * wRes;
+
+    // ---- Step 6: measurement update ----------------------------------------
+    const float eTheta = atan2f(sinf(thetaAcc - thetaPred), cosf(thetaAcc - thetaPred));
+
+    _pitchRad = thetaPred + (MPU_KP * w) * eTheta;
+    _s.pitchDeg = _pitchRad * RAD_TO_DEG;
+
+    // ---- Step 6.2: online gyro bias ----------------------------------------
+    //
+    // Only while the bike is quiescent. Bias drifts with temperature over
+    // minutes, so integrating it during motion would just absorb real rotation.
+    const float omegaNorm = sqrtf(wx * wx + wy * wy + wz * wz);
+    if (w > 0.8f && omegaNorm < MPU_GYRO_QUIET) {
+        _biasYOnline -= (MPU_KI * w) * eTheta * dt;
+    }
 
     ++_rateCount;
     return true;
