@@ -51,22 +51,57 @@ class LcdDisplay;
 extern LcdDisplay Display;
 
 // ---------------------------------------------------------------------------
-// Colour palette (RGB565)
+// Colour palette
+//
+// Sprites run at 4 bits per pixel against an explicit RGB565 palette instead of
+// TFT_eSPI's default 16bpp. That quarters sprite RAM -- 70 KB -> 17 KB on the
+// round target -- and it is what leaves the Wi-Fi stack enough heap to start on
+// a classic ESP32, where Bluedroid takes ~90 KB and the LCD otherwise leaves too
+// little for the SoftAP (xQueueCreateMutex returned NULL inside WiFi.mode(),
+// aborting in lock_init_generic).
+//
+// 4bpp is chosen over 8bpp deliberately: TFT_eSPI's 8bpp sprites are 332 RGB with
+// no palette, which quantises the dark teal curve fill (0x0311) to something very
+// close to black. The palette keeps every colour exact, and the design needs
+// fewer than 16 of them.
+//
+// Index a sprite's draw calls with the PAL_* values. Use LCD_PALETTE[PAL_x] only
+// for the few calls that target the panel directly rather than a sprite.
 // ---------------------------------------------------------------------------
-namespace LcdColor {
-    constexpr uint16_t BG          = TFT_BLACK;
-    constexpr uint16_t BORDER      = 0x2104;   // very dark grey
-    constexpr uint16_t TEXT_DIM    = 0x8410;   // medium grey label
-    constexpr uint16_t TEXT_WHITE  = TFT_WHITE;
-    constexpr uint16_t ACCENT_CYAN = 0x07FF;
-    constexpr uint16_t ACCENT_GREEN= 0x07E0;
-    constexpr uint16_t ACCENT_YELL = 0xFFE0;
-    constexpr uint16_t ACCENT_RED  = 0xF800;
-    constexpr uint16_t CURVE_BASE  = 0x0311;   // dark teal fill under curve
-    constexpr uint16_t CURVE_LINE  = 0x07EF;   // bright cyan curve edge
-    constexpr uint16_t CURSOR_CLR  = 0xF81F;   // magenta cadence cursor
-    constexpr uint16_t TILE_BG     = 0x0841;   // tile background (very dark navy)
-}
+enum LcdPal : uint8_t {
+    PAL_BG = 0,        // panel background
+    PAL_BORDER,        // very dark grey: frame, and inactive curve
+    PAL_TEXT_DIM,      // medium grey tile label
+    PAL_TEXT_WHITE,
+    PAL_ACCENT_CYAN,
+    PAL_ACCENT_GREEN,
+    PAL_ACCENT_YELL,
+    PAL_ACCENT_RED,
+    PAL_CURVE_BASE,    // dark teal fill under the active curve
+    PAL_CURVE_LINE,    // bright cyan curve edge
+    PAL_CURSOR_CLR,    // magenta cadence cursor
+    PAL_TILE_BG,       // tile background (very dark navy)
+    PAL_COUNT
+};
+
+// Must hold 16 entries: TFT_eSPI's 4bpp colour map is fixed at 16.
+constexpr uint16_t LCD_PALETTE[16] = {
+    TFT_BLACK,   // PAL_BG
+    0x2104,      // PAL_BORDER
+    0x8410,      // PAL_TEXT_DIM
+    TFT_WHITE,   // PAL_TEXT_WHITE
+    0x07FF,      // PAL_ACCENT_CYAN
+    0x07E0,      // PAL_ACCENT_GREEN
+    0xFFE0,      // PAL_ACCENT_YELL
+    0xF800,      // PAL_ACCENT_RED
+    0x0311,      // PAL_CURVE_BASE
+    0x07EF,      // PAL_CURVE_LINE
+    0xF81F,      // PAL_CURSOR_CLR
+    0x0841,      // PAL_TILE_BG
+    TFT_BLACK, TFT_BLACK, TFT_BLACK, TFT_BLACK   // 12..15 unused
+};
+
+constexpr int8_t LCD_SPRITE_BPP = 4;
 
 // ---------------------------------------------------------------------------
 // LcdDisplay class
@@ -205,7 +240,7 @@ private:
     void _drawTile(TFT_eSprite& spr,
                    int16_t x, int16_t y, int16_t w, int16_t h,
                    const char* label, const char* value,
-                   uint16_t valueColor = LcdColor::TEXT_WHITE);
+                   uint8_t valueColor = PAL_TEXT_WHITE);
 
     // Compute the PAS target-current % for a given cadence RPM and level,
     // using the current config snapshot. Returns a value in [0, 100].

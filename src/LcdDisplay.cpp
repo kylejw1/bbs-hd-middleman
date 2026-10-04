@@ -37,23 +37,30 @@ void LcdDisplay::begin() {
 
     _tft.init();
     _tft.setRotation(LCD_ROTATION);
-    _tft.fillScreen(LcdColor::BG);
+    // A direct-to-panel fill needs the real RGB565 value, not a palette index.
+    _tft.fillScreen(LCD_PALETTE[PAL_BG]);
     _tft.setSwapBytes(true);
 
-    // Sprites are the real memory cost of this feature -- two text rows plus the
-    // chart, which on the round target is ~115 KB. Allocate them, and if any
-    // allocation fails disable the display outright: pushing an unallocated
-    // sprite is worse than showing nothing.
+    // Sprites are the real memory cost of this feature. They run at 4bpp against
+    // the palette in LcdDisplay.h -- 4x smaller than TFT_eSPI's default 16bpp,
+    // which is what keeps the radios alive on a classic ESP32 (see the note
+    // there). Allocate them, and if any allocation fails disable the display
+    // outright: pushing an unallocated sprite is worse than showing nothing.
     //
     // These go to the USB console rather than Debug.trace because tracing is off
     // by default (DEBUG_TRACE_ENABLED_DEFAULT 0), and this is the only boot-time
     // evidence that the panel came up or why it did not.
+    _sprRow0.setColorDepth(LCD_SPRITE_BPP);
+    _sprRow1.setColorDepth(LCD_SPRITE_BPP);
+    _sprChart.setColorDepth(LCD_SPRITE_BPP);
+
     _spritesOk  = (_sprRow0.createSprite(W, ROW0_H) != nullptr);
     _spritesOk &= (_sprRow1.createSprite(W, ROW1_H) != nullptr);
     _spritesOk &= (_sprChart.createSprite(CHART_W, CHART_H) != nullptr);
 
-    const uint32_t spriteBytes =
-        ((uint32_t)W * ROW0_H + (uint32_t)W * ROW1_H + (uint32_t)CHART_W * CHART_H) * 2;
+    const uint32_t spritePixels =
+        (uint32_t)W * ROW0_H + (uint32_t)W * ROW1_H + (uint32_t)CHART_W * CHART_H;
+    const uint32_t spriteBytes = spritePixels * LCD_SPRITE_BPP / 8;
 
     if (!_spritesOk) {
         Serial.printf("[LCD] sprite alloc failed (%u B needed, free heap %u) - display disabled\n",
@@ -61,13 +68,15 @@ void LcdDisplay::begin() {
         return;
     }
 
-    _sprRow0.setSwapBytes(true);
-    _sprRow1.setSwapBytes(true);
-    _sprChart.setSwapBytes(true);
+    // Only valid once createSprite() has allocated the sprite's colour map.
+    _sprRow0.createPalette(LCD_PALETTE, 16);
+    _sprRow1.createPalette(LCD_PALETTE, 16);
+    _sprChart.createPalette(LCD_PALETTE, 16);
 
     _initialised = true;
-    Serial.printf("[LCD] %s ready %dx%d, sprites %u B, free heap %u -> %u\n",
-                  LCD_DISPLAY_NAME, W, H, spriteBytes, heapBefore, ESP.getFreeHeap());
+    Serial.printf("[LCD] %s ready %dx%d, sprites %u B @ %dbpp, free heap %u -> %u\n",
+                  LCD_DISPLAY_NAME, W, H, spriteBytes, LCD_SPRITE_BPP,
+                  heapBefore, ESP.getFreeHeap());
 }
 
 // =============================================================================
@@ -186,7 +195,7 @@ void LcdDisplay::_snapshotAndDiff() {
 // and moves target-speed to row 1 (see _renderRow1 / _drawStatusLine).
 // =============================================================================
 void LcdDisplay::_renderRow0() {
-    _sprRow0.fillSprite(LcdColor::BG);
+    _sprRow0.fillSprite(PAL_BG);
 
     char buf[16];
 
@@ -196,7 +205,7 @@ void LcdDisplay::_renderRow0() {
     } else {
         strcpy(buf, "--");
     }
-    _drawTile(_sprRow0, TILE_X0 + 0*TILE_W, 0, TILE_W, ROW0_H, "cad", buf, LcdColor::ACCENT_CYAN);
+    _drawTile(_sprRow0, TILE_X0 + 0*TILE_W, 0, TILE_W, ROW0_H, "cad", buf, PAL_ACCENT_CYAN);
 
     // Tile 1: Motor RPM
     if (_last.hasTargetTelemetry) {
@@ -204,7 +213,7 @@ void LcdDisplay::_renderRow0() {
     } else {
         strcpy(buf, "--");
     }
-    _drawTile(_sprRow0, TILE_X0 + 1*TILE_W, 0, TILE_W, ROW0_H, "mRPM", buf, LcdColor::ACCENT_GREEN);
+    _drawTile(_sprRow0, TILE_X0 + 1*TILE_W, 0, TILE_W, ROW0_H, "mRPM", buf, PAL_ACCENT_GREEN);
 
 #if defined(LCD_DISPLAY_ST7789)
     // Tile 2: Target current %
@@ -213,7 +222,7 @@ void LcdDisplay::_renderRow0() {
     } else {
         strcpy(buf, "--%");
     }
-    _drawTile(_sprRow0, TILE_X0 + 2*TILE_W, 0, TILE_W, ROW0_H, "I tgt", buf, LcdColor::ACCENT_YELL);
+    _drawTile(_sprRow0, TILE_X0 + 2*TILE_W, 0, TILE_W, ROW0_H, "I tgt", buf, PAL_ACCENT_YELL);
 
     // Tile 3: Target speed %
     if (_last.hasTargetTelemetry) {
@@ -221,7 +230,7 @@ void LcdDisplay::_renderRow0() {
     } else {
         strcpy(buf, "--%");
     }
-    _drawTile(_sprRow0, TILE_X0 + 3*TILE_W, 0, TILE_W, ROW0_H, "S tgt", buf, LcdColor::TEXT_WHITE);
+    _drawTile(_sprRow0, TILE_X0 + 3*TILE_W, 0, TILE_W, ROW0_H, "S tgt", buf, PAL_TEXT_WHITE);
 #endif
 
     _sprRow0.pushSprite(0, ROW0_Y);
@@ -234,30 +243,30 @@ void LcdDisplay::_renderRow0() {
 // carries battery / current / watts / PAS.
 // =============================================================================
 void LcdDisplay::_renderRow1() {
-    _sprRow1.fillSprite(LcdColor::BG);
+    _sprRow1.fillSprite(PAL_BG);
 
     char buf[16];
 
 #if defined(LCD_DISPLAY_ST7789)
     // Tile 0: Battery %
-    uint16_t battColor = LcdColor::ACCENT_GREEN;
-    if (_last.batteryPct < 20) battColor = LcdColor::ACCENT_RED;
-    else if (_last.batteryPct < 40) battColor = LcdColor::ACCENT_YELL;
+    uint8_t battColor = PAL_ACCENT_GREEN;
+    if (_last.batteryPct < 20) battColor = PAL_ACCENT_RED;
+    else if (_last.batteryPct < 40) battColor = PAL_ACCENT_YELL;
     snprintf(buf, sizeof(buf), "%d%%", _last.batteryPct);
     _drawTile(_sprRow1, TILE_X0 + 0*TILE_W, 0, TILE_W, ROW1_H, "batt", buf, battColor);
 
     // Tile 1: Current A (1 decimal)
     _fmtFloat1(buf, sizeof(buf), _last.currentAmps);
-    _drawTile(_sprRow1, TILE_X0 + 1*TILE_W, 0, TILE_W, ROW1_H, "A", buf, LcdColor::TEXT_WHITE);
+    _drawTile(_sprRow1, TILE_X0 + 1*TILE_W, 0, TILE_W, ROW1_H, "A", buf, PAL_TEXT_WHITE);
 
     // Tile 2: Watts
     _fmtInt(buf, sizeof(buf), _last.powerWatts);
-    _drawTile(_sprRow1, TILE_X0 + 2*TILE_W, 0, TILE_W, ROW1_H, "W", buf, LcdColor::ACCENT_YELL);
+    _drawTile(_sprRow1, TILE_X0 + 2*TILE_W, 0, TILE_W, ROW1_H, "W", buf, PAL_ACCENT_YELL);
 
     // Tile 3: PAS level + mode letter
     const char* modeChar = (_last.operationMode == 1) ? "S" : "P";
     snprintf(buf, sizeof(buf), "%s%d", modeChar, _last.assistLevel);
-    _drawTile(_sprRow1, TILE_X0 + 3*TILE_W, 0, TILE_W, ROW1_H, "PAS", buf, LcdColor::ACCENT_CYAN);
+    _drawTile(_sprRow1, TILE_X0 + 3*TILE_W, 0, TILE_W, ROW1_H, "PAS", buf, PAL_ACCENT_CYAN);
 #else
     // Tile 2: Target current %
     if (_last.hasTargetTelemetry) {
@@ -265,7 +274,7 @@ void LcdDisplay::_renderRow1() {
     } else {
         strcpy(buf, "--%");
     }
-    _drawTile(_sprRow1, TILE_X0 + 0*TILE_W, 0, TILE_W, ROW1_H, "I tgt", buf, LcdColor::ACCENT_YELL);
+    _drawTile(_sprRow1, TILE_X0 + 0*TILE_W, 0, TILE_W, ROW1_H, "I tgt", buf, PAL_ACCENT_YELL);
 
     // Tile 3: Target speed %
     if (_last.hasTargetTelemetry) {
@@ -273,7 +282,7 @@ void LcdDisplay::_renderRow1() {
     } else {
         strcpy(buf, "--%");
     }
-    _drawTile(_sprRow1, TILE_X0 + 1*TILE_W, 0, TILE_W, ROW1_H, "S tgt", buf, LcdColor::TEXT_WHITE);
+    _drawTile(_sprRow1, TILE_X0 + 1*TILE_W, 0, TILE_W, ROW1_H, "S tgt", buf, PAL_TEXT_WHITE);
 #endif
 
     _sprRow1.pushSprite(0, ROW1_Y);
@@ -283,7 +292,7 @@ void LcdDisplay::_renderRow1() {
 // _renderChart()  — PAS cadence/current curve for all 10 levels + live cursor
 // =============================================================================
 void LcdDisplay::_renderChart() {
-    _sprChart.fillSprite(LcdColor::BG);
+    _sprChart.fillSprite(PAL_BG);
 
     // The curve occupies the top of the sprite. GC9A01 reserves the remainder for
     // a status line, because a 240 px circle has no room for two more tile rows.
@@ -317,7 +326,7 @@ void LcdDisplay::_drawStatusLine(TFT_eSprite& spr, int16_t w, int16_t y) {
 
     spr.setTextFont(2);
     spr.setTextSize(1);
-    spr.setTextColor(LcdColor::TEXT_WHITE, LcdColor::BG);
+    spr.setTextColor(PAL_TEXT_WHITE, PAL_BG);
 
     int16_t tx = (w - spr.textWidth(buf)) / 2;
     if (tx < 0) tx = 0;
@@ -346,16 +355,16 @@ void LcdDisplay::_drawCurve(TFT_eSprite& spr, int16_t w, int16_t h,
                              bool hasLive) {
     // Draw axis ticks (light grey)
     // X axis: bottom edge
-    spr.drawFastHLine(0, h - 1, w, LcdColor::BORDER);
+    spr.drawFastHLine(0, h - 1, w, PAL_BORDER);
     // Y axis: left edge
-    spr.drawFastVLine(0, 0, h, LcdColor::BORDER);
+    spr.drawFastVLine(0, 0, h, PAL_BORDER);
 
     // Draw each level, back to front. Level 0 first (so active level on top).
     for (int lvl = 9; lvl >= 0; --lvl) {
         bool isActive = (lvl == (int)_last.assistLevel);
 
-        uint16_t lineColor  = isActive ? LcdColor::CURVE_LINE : LcdColor::BORDER;
-        uint16_t fillColor  = isActive ? LcdColor::CURVE_BASE : 0; // only fill active
+        uint8_t lineColor  = isActive ? PAL_CURVE_LINE : PAL_BORDER;
+        uint8_t fillColor  = isActive ? PAL_CURVE_BASE : 0; // only fill active
 
         int prevY = -1;
         for (int px = 0; px < w; ++px) {
@@ -388,17 +397,17 @@ void LcdDisplay::_drawCurve(TFT_eSprite& spr, int16_t w, int16_t h,
     if (hasLive && liveCadenceRpm <= LCD_CURVE_MAX_CADENCE_RPM) {
         int cursorX = (int)((liveCadenceRpm * (w - 1)) / LCD_CURVE_MAX_CADENCE_RPM);
         cursorX = constrain(cursorX, 0, w - 1);
-        spr.drawFastVLine(cursorX, 0, h, LcdColor::CURSOR_CLR);
+        spr.drawFastVLine(cursorX, 0, h, PAL_CURSOR_CLR);
 
         // Also draw horizontal dotted line at the target current level
         int targetY = (int)(h - 1 - (liveTargetPct * (h - 1) / 100.0f));
         targetY = constrain(targetY, 0, h - 1);
         for (int px = 0; px < w; px += 4) {
-            spr.drawPixel(px, targetY, LcdColor::CURSOR_CLR);
+            spr.drawPixel(px, targetY, PAL_CURSOR_CLR);
         }
 
         // Small crosshair marker at intersection
-        spr.fillRect(cursorX - 2, targetY - 2, 5, 5, LcdColor::CURSOR_CLR);
+        spr.fillRect(cursorX - 2, targetY - 2, 5, 5, PAL_CURSOR_CLR);
     }
 }
 
@@ -469,22 +478,22 @@ float LcdDisplay::_computePasCurrent(uint8_t cadenceRpm, uint8_t levelIdx) const
 void LcdDisplay::_drawTile(TFT_eSprite& spr,
                            int16_t x, int16_t y, int16_t w, int16_t h,
                            const char* label, const char* value,
-                           uint16_t valueColor) {
+                           uint8_t valueColor) {
     // Tile background + border
-    spr.fillRect(x, y, w, h, LcdColor::TILE_BG);
-    spr.drawRect(x, y, w, h, LcdColor::BORDER);
+    spr.fillRect(x, y, w, h, PAL_TILE_BG);
+    spr.drawRect(x, y, w, h, PAL_BORDER);
 
     // Dim label (font 1 = 6px high, proportional)
     spr.setTextFont(1);
     spr.setTextSize(1);
-    spr.setTextColor(LcdColor::TEXT_DIM, LcdColor::TILE_BG);
+    spr.setTextColor(PAL_TEXT_DIM, PAL_TILE_BG);
     spr.setCursor(x + 2, y + 1);
     spr.print(label);
 
     // Value (font 2 = ~14px, fits in 18px row with 2px margin top and bottom)
     spr.setTextFont(2);
     spr.setTextSize(1);
-    spr.setTextColor(valueColor, LcdColor::TILE_BG);
+    spr.setTextColor(valueColor, PAL_TILE_BG);
 
     // Centre-align the value text in the tile
     int16_t tw = spr.textWidth(value, 2);
