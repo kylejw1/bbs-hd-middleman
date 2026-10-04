@@ -55,6 +55,14 @@ public:
 private:
     bool writeReg(uint8_t reg, uint8_t val);
     bool readRegs(uint8_t reg, uint8_t* buf, uint8_t len);
+
+    // One 14-byte burst, unscaled: [ax ay az temp gx gy gz].
+    bool readRaw(int16_t raw[7]);
+
+    // Averages gyro bias, the 1 g reference and the starting attitude while the
+    // bike is stationary. Returns false if it was clearly moving.
+    bool calibrate();
+
     bool fetch();
 
     bool     _present       = false;
@@ -66,6 +74,14 @@ private:
     uint32_t _rateMarkMs    = 0;
     uint32_t _rateCount     = 0;
     Sample   _s             = {};
+
+    // Measured at boot by calibrate().
+    float    _biasGx        = 0.0f;    // deg/s
+    float    _biasGy        = 0.0f;
+    float    _biasGz        = 0.0f;
+    float    _gRef          = 1.0f;    // measured 1 g, so gain error isn't tilt
+    float    _azLp          = 1.0f;    // low-passed, gravity-normalised az
+    float    _azLpCoef      = 0.0066f; // from MPU_AZ_LP_MS and MPU_READ_HZ
 };
 
 extern Mpu6050 Mpu;

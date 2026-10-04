@@ -388,7 +388,7 @@ void LcdDisplay::_renderImuPage() {
     _sprRow1.drawString(buf, W / 2, 18);
     _sprRow1.pushSprite(0, ROW1_Y);
 
-    // --- Chart region: gyro, filtered tilt, bubble ---
+    // --- Chart region: gyro, filtered tilt, grade, bubble ---
     _sprChart.fillSprite(PAL_BG);
     _sprChart.setTextDatum(TC_DATUM);
     _sprChart.setTextFont(1);
@@ -399,11 +399,18 @@ void LcdDisplay::_renderImuPage() {
     _sprChart.setTextFont(2);
     _sprChart.setTextColor(PAL_TEXT_WHITE, PAL_BG);
     snprintf(buf, sizeof(buf), "P %+.1f  R %+.1f", s.pitchDeg, s.rollDeg);
-    _sprChart.drawString(buf, CHART_W / 2, 14);
+    _sprChart.drawString(buf, CHART_W / 2, 13);
+
+    // Grade is what the pitch is actually for: rise over run, so tan(pitch).
+    // 1 degree is about 1.75%, and the small-angle shortcut holds well past
+    // anything a bicycle climbs.
+    _sprChart.setTextColor(PAL_ACCENT_CYAN, PAL_BG);
+    snprintf(buf, sizeof(buf), "grade %+.1f%%", tanf(s.pitchDeg * DEG_TO_RAD) * 100.0f);
+    _sprChart.drawString(buf, CHART_W / 2, 31);
 
     const int16_t cx = CHART_W / 2;
-    const int16_t cy = 62;
-    const int16_t r  = 24;
+    const int16_t cy = 70;
+    const int16_t r  = 20;
     _sprChart.drawCircle(cx, cy, r, PAL_BORDER);
     _sprChart.drawCircle(cx, cy, r / 2, PAL_BORDER);
     _sprChart.drawFastHLine(cx - r, cy, r * 2, PAL_BORDER);

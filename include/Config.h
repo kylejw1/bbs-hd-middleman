@@ -301,10 +301,46 @@
 #define MPU_READ_HZ         100
 #endif
 
-// Complementary filter weight on the gyro: trust it for short-term motion, and
-// the accelerometer's gravity vector for the long-term reference.
-#ifndef MPU_COMP_ALPHA
-#define MPU_COMP_ALPHA      0.98f
+// Complementary filter weights, per axis, because the two axes have very
+// different problems.
+//
+// PITCH is corrected slowly. The accelerometer's pitch reading is corrupted by
+// the bike's own acceleration -- on the flat at 2 m/s^2 it reads 11.5 degrees
+// off -- so the filter must treat the accelerometer as a slow drift reference
+// and let the gyro carry multi-second accel and braking episodes. 0.999 at
+// 100 Hz is a ~10 s time constant.
+//
+// ROLL is corrected quickly. Lateral acceleration on a bicycle is small, so the
+// accelerometer's roll reference is trustworthy and a fast correction is what
+// keeps gyro drift out. 0.98 is ~0.5 s.
+#ifndef MPU_PITCH_ALPHA
+#define MPU_PITCH_ALPHA     0.999f
+#endif
+#ifndef MPU_ROLL_ALPHA
+#define MPU_ROLL_ALPHA      0.98f
+#endif
+
+// One-pole low-pass on the gravity-normalised Z axis, in milliseconds. Bumps and
+// suspension put vertical acceleration on Z so it has to be averaged out, while
+// a hill's pitch does not change on this timescale. This feeds the
+// acceleration-immune pitch reference -- see Mpu6050.cpp::fetch().
+#ifndef MPU_AZ_LP_MS
+#define MPU_AZ_LP_MS        1500
+#endif
+
+// Samples averaged at boot to measure gyro bias, the 1 g reference and the
+// starting attitude. The bike must be STATIONARY; a warning is logged if the
+// gyro spread suggests it was not. Uncancelled bias is precisely what makes the
+// pitch drift during acceleration, because that is when the filter is flying on
+// the gyro alone. Runs in setup() and takes well under a second.
+#ifndef MPU_CAL_SAMPLES
+#define MPU_CAL_SAMPLES     200
+#endif
+
+// Peak-to-peak gyro spread (deg/s) above which the boot calibration is assumed
+// to have happened while the bike was moving.
+#ifndef MPU_CAL_MAX_SPREAD_DPS
+#define MPU_CAL_MAX_SPREAD_DPS  5.0f
 #endif
 #endif // MPU6050_ENABLED
 
