@@ -21,6 +21,10 @@ LcdDisplay::LcdDisplay()
     , _initialised(false)
     , _spritesOk(false)
     , _lastRefreshMs(0)
+#if LCD_IMU_PAGE
+    , _page(0)
+    , _lastPageSwitchMs(0)
+#endif
     , _dirtyRow0(true)
     , _dirtyRow1(true)
     , _dirtyChart(true)
@@ -73,6 +77,9 @@ void LcdDisplay::begin() {
     _sprRow1.createPalette(LCD_PALETTE, 16);
     _sprChart.createPalette(LCD_PALETTE, 16);
 
+#if LCD_IMU_PAGE
+    _lastPageSwitchMs = millis();   // bike page first
+#endif
     _initialised = true;
     Serial.printf("[LCD] %s ready %dx%d, sprites %u B @ %dbpp, free heap %u -> %u\n",
                   LCD_DISPLAY_NAME, W, H, spriteBytes, LCD_SPRITE_BPP,
@@ -86,8 +93,36 @@ void LcdDisplay::process() {
     if (!_initialised) return;
 
     uint32_t now = millis();
+
+#if LCD_IMU_PAGE
+    // Alternate between the bike page and the IMU page. This only ever leaves
+    // page 0 when an MPU-6050 actually answered on the bus, so a board without
+    // one behaves exactly as it did before.
+    if (Mpu.isPresent()) {
+        if (now - _lastPageSwitchMs >= LCD_PAGE_MS) {
+            _lastPageSwitchMs = now;
+            _page ^= 1;
+            _invalidateSnapshot();
+        }
+    } else if (_page != 0) {
+        _page = 0;
+        _invalidateSnapshot();
+    }
+
+    // The IMU page carries a live bubble level, so it runs faster than the bike
+    // page's lazy diff-and-push refresh.
+    const uint32_t interval = (_page == 1) ? LCD_IMU_REFRESH_MS : LCD_REFRESH_MS;
+    if (now - _lastRefreshMs < interval) return;
+    _lastRefreshMs = now;
+
+    if (_page == 1) {
+        _renderImuPage();
+        return;
+    }
+#else
     if (now - _lastRefreshMs < LCD_REFRESH_MS) return;
     _lastRefreshMs = now;
+#endif
 
     _snapshotAndDiff();
 
@@ -307,6 +342,81 @@ void LcdDisplay::_renderChart() {
 
     _sprChart.pushSprite(CHART_X, CHART_Y);
 }
+
+#if LCD_IMU_PAGE
+// =============================================================================
+// _renderImuPage() — page 1: the MPU-6050 readout
+//
+// Reuses the three bike-page sprite regions rather than allocating a full-screen
+// sprite: another 240x240 buffer would be ~29 KB of heap even at 4bpp, and on a
+// classic ESP32 the Wi-Fi stack needs what is left.
+//
+// Bubble level: the dot is the gravity vector projected onto the panel. 0.5 px
+// per degree puts 30 degrees of tilt at the edge of the ring.
+// =============================================================================
+void LcdDisplay::_renderImuPage() {
+    const Mpu6050::Sample& s = Mpu.sample();
+    char buf[40];
+
+    // --- Row 0: identity and bus health ---
+    _sprRow0.fillSprite(PAL_BG);
+    _sprRow0.setTextDatum(TC_DATUM);
+    _sprRow0.setTextFont(2);
+    _sprRow0.setTextColor(PAL_ACCENT_CYAN, PAL_BG);
+    _sprRow0.drawString("MPU-6050", W / 2, 2);
+
+    _sprRow0.setTextFont(1);
+    _sprRow0.setTextColor(PAL_TEXT_DIM, PAL_BG);
+    snprintf(buf, sizeof(buf), "0x%02X  WHO 0x%02X  %u Hz",
+             Mpu.address(), (unsigned)Mpu.whoAmI(), (unsigned)Mpu.sampleRateHz());
+    _sprRow0.drawString(buf, W / 2, 21);
+    _sprRow0.pushSprite(0, ROW0_Y);
+
+    // --- Row 1: accelerometer and temperature ---
+    _sprRow1.fillSprite(PAL_BG);
+    _sprRow1.setTextDatum(TC_DATUM);
+    _sprRow1.setTextFont(2);
+    _sprRow1.setTextColor(PAL_ACCENT_GREEN, PAL_BG);
+    snprintf(buf, sizeof(buf), "Ax %+.3f  Ay %+.3f", s.ax, s.ay);
+    _sprRow1.drawString(buf, W / 2, 0);
+    snprintf(buf, sizeof(buf), "Az %+.3f  T %+.1f", s.az, s.tempC);
+    _sprRow1.drawString(buf, W / 2, 18);
+    _sprRow1.pushSprite(0, ROW1_Y);
+
+    // --- Chart region: gyro, filtered tilt, bubble ---
+    _sprChart.fillSprite(PAL_BG);
+    _sprChart.setTextDatum(TC_DATUM);
+    _sprChart.setTextFont(1);
+    _sprChart.setTextColor(PAL_ACCENT_YELL, PAL_BG);
+    snprintf(buf, sizeof(buf), "G %+.1f %+.1f %+.1f dps", s.gx, s.gy, s.gz);
+    _sprChart.drawString(buf, CHART_W / 2, 2);
+
+    _sprChart.setTextFont(2);
+    _sprChart.setTextColor(PAL_TEXT_WHITE, PAL_BG);
+    snprintf(buf, sizeof(buf), "P %+.1f  R %+.1f", s.pitchDeg, s.rollDeg);
+    _sprChart.drawString(buf, CHART_W / 2, 14);
+
+    const int16_t cx = CHART_W / 2;
+    const int16_t cy = 62;
+    const int16_t r  = 24;
+    _sprChart.drawCircle(cx, cy, r, PAL_BORDER);
+    _sprChart.drawCircle(cx, cy, r / 2, PAL_BORDER);
+    _sprChart.drawFastHLine(cx - r, cy, r * 2, PAL_BORDER);
+    _sprChart.drawFastVLine(cx, cy - r, r * 2, PAL_BORDER);
+
+    float dx = s.pitchDeg * 0.5f;
+    float dy = s.rollDeg  * 0.5f;
+    const float mag = sqrtf(dx * dx + dy * dy);
+    if (mag > (float)(r - 3)) {
+        const float k = (float)(r - 3) / mag;
+        dx *= k;
+        dy *= k;
+    }
+    _sprChart.fillCircle(cx + (int16_t)dx, cy + (int16_t)dy, 3, PAL_CURSOR_CLR);
+
+    _sprChart.pushSprite(CHART_X, CHART_Y);
+}
+#endif // LCD_IMU_PAGE
 
 #if defined(LCD_DISPLAY_GC9A01)
 // =============================================================================

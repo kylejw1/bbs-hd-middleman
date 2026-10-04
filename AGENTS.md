@@ -276,6 +276,7 @@ Every dashboard call goes through `apiFetch()` in `web/index.html`, which is the
 │   ├── BleProtocol.h      # GATT UUIDs + BLE frame layout (mirrored in web/index.html)
 │   ├── BlePortal.h        # BLE GATT server, deferred API dispatch
 │   ├── LcdDisplay.h       # Optional TFT subsystem (ST7789 / GC9A01 targets)
+│   ├── Mpu6050.h          # Optional MPU-6050 IMU on I2C (register-level driver)
 │   ├── BbsFwProtocol.h    # Opcodes, structs, bitmasks, checksums, JSON serialization
 │   ├── Telemetry.h        # Thread-safe metrics tracker & event log ring buffer
 │   ├── SerialBridge.h     # Dual UART engine, state machine, mock synthesizer
@@ -286,6 +287,7 @@ Every dashboard call goes through `apiFetch()` in `web/index.html`, which is the
     ├── ApiHandlers.cpp    # API_ROUTES table + route/query helpers
     ├── BlePortal.cpp      # Bluedroid GATT server, request reassembly, notify chunking
     ├── LcdDisplay.cpp     # Sprite regions, PAS curve + cursor, numeric tiles
+    ├── Mpu6050.cpp        # Register-level MPU-6050 driver + complementary filter
     ├── BbsFwProtocol.cpp  # JSON <-> struct converters, event log string table
     ├── Telemetry.cpp      # Metric calculations, speed math, JSON builder
     ├── SerialBridge.cpp   # Non-blocking UART streaming, arbitration logic
@@ -316,7 +318,7 @@ Each has its own `.pio/build/<env>` directory, so switching never risks flashing
 `[env:gc9a01-esp32]` targets a classic ESP32 rather than an S3, which changes four things:
 
 * **Different chip target**: `board = esp32dev`, and the S3-only `-DARDUINO_USB_CDC_ON_BOOT` / `-DARDUINO_USB_MODE` flags are **absent**. There is no native USB on this chip — `Serial` goes out over UART0 through the on-board USB-serial bridge.
-* **4MB flash, not 8MB**: `default_8MB.csv` places app0 at 0x10000 with size 0x330000, which runs off the end of a 4MB part. That environment uses `min_spiffs.csv` (two 1.92MB OTA slots). BLE plus the LCD is ~1.85MB — **94% of a 1.92MB slot** — so it fits and OTA still works, but only ~119KB is spare and this is the one environment with no room to grow. `min_spiffs` also reserves a 128KB spiffs partition that nothing in this firmware opens (there is no filesystem use in `src/` at all), so folding it into the app slots would buy back ~98KB if that is ever needed. Note `default.csv` gives only 1.31MB per slot, which this build does not fit at all.
+* **4MB flash, not 8MB**: `default_8MB.csv` places app0 at 0x10000 with size 0x330000, which runs off the end of a 4MB part. That environment uses `min_spiffs.csv` (two 1.92MB OTA slots). BLE plus the LCD plus the MPU-6050 driver is ~1.87MB — **95% of a 1.92MB slot** — so it fits and OTA still works, but only ~93KB is spare and this is the one environment with no room to grow. `min_spiffs` also reserves a 128KB spiffs partition that nothing in this firmware opens (there is no filesystem use in `src/` at all), so folding it into the app slots would buy back ~98KB if that is ever needed. Note `default.csv` gives only 1.31MB per slot, which this build does not fit at all.
 * **Different LCD pins, and this is the dangerous one**: on classic ESP32, **GPIO 6–11 are the SPI flash bus**. The S3 default set (MOSI 11, CS 10, DC 9, RST 8) sits directly on top of it and will crash the chip or corrupt flash; SCLK was on GPIO12, the MTDI strapping pin that selects flash voltage. That environment remaps all five.
 * **No GPIO48**: classic GPIOs stop at 39, so the status LED moves to GPIO25.
 
@@ -343,6 +345,18 @@ Compile-time selected by `-DLCD_DISPLAY_ST7789` or `-DLCD_DISPLAY_GC9A01`; neith
 * **`_computePasCurrent()` mirrors `computePasTargetCurrent()` in [`web/index.html`](file:///home/kyle/dev/bbs-hd-middleman/web/index.html)** — it is the only place the PAS curve model is duplicated, so the two must be changed together. It must short-circuit to a flat maximum for `ASSIST_FLAG_PAS_VARIABLE` levels, exactly as the JS does.
 * Called from `loop()` only, never blocking: `_tft.init()` and sprite allocation happen once in `setup()`.
 * Init diagnostics go to `Serial.printf`, not `Debug.trace`, because tracing is off by default and these are the only boot-time evidence the panel came up.
+* **Two pages when an MPU-6050 is present.** The round display alternates between the bike page and an IMU page every `LCD_PAGE_MS` (5 s), refreshing the IMU page at `LCD_IMU_REFRESH_MS` (100 ms) because it carries a live bubble level. The IMU page **reuses the same three sprites** rather than allocating a full-screen buffer — another 240×240 sprite would be ~29 KB of heap even at 4bpp, which the Wi-Fi stack cannot spare. Cycling only ever happens while `Mpu.isPresent()`, so a board without the sensor renders exactly as before, and the snapshot is invalidated on each switch so the incoming page repaints fully instead of diffing against the other page's values. The IMU page is **GC9A01-only**: the 284×76 strip has no room for six axis values plus a bubble, so `LCD_IMU_PAGE` is 0 there.
+
+### MPU-6050 Accelerometer / Gyro (`Mpu6050`) — optional, I2C
+A GY-521 breakout carries an **MPU-6050, which is I2C only**. It has no SPI — the SPI-capable part is the MPU-6000, which a GY-521 does not expose — so this is a four-wire I2C device (five with `INT`). Nothing else in this firmware uses I2C, so the bus is entirely free.
+
+* **Register-level driver on purpose.** `Adafruit_MPU6050` drags in `Adafruit_BusIO` plus the Unified Sensor abstraction, which is tens of KB of flash for a handful of registers; on the classic ESP32 that is the difference between fitting and not. [`Mpu6050.cpp`](file:///home/kyle/dev/bbs-hd-middleman/src/Mpu6050.cpp) talks to the registers directly over `Wire`. Gated by `MPU6050_ENABLED` in [`Config.h`](file:///home/kyle/dev/bbs-hd-middleman/include/Config.h), on by default. Measured cost is ~20 KB of flash on the S3 and ~24 KB on the classic GC9A01 env — nearly all of it the Arduino `Wire` stack rather than the driver.
+* **Pins are 13/14, deliberately NOT the Arduino defaults.** `Wire` defaults to SDA 21 / SCL 22 on a classic ESP32 and SDA 8 / SCL 9 on an S3 — and on this project those are the LCD's CS/SCLK and RST/DC respectively. `Wire.begin()` is therefore **always** called with explicit pins. Never call the argument-less form: it would drive the panel's reset and data/command lines.
+* **Power the GY-521 from 3V3, not 5V.** Most breakouts carry I2C pull-ups, and on some clones they are tied to VCC rather than the onboard regulator output — 5V would put 5V on SDA/SCL and damage the ESP32. At 3V3 it is safe however the board is built, and no level shifter is needed (unlike the 5V Bafang UARTs). `ADO` selects 0x68 (GND/floating) or 0x69 (VCC); `XDA`/`XCL` are for an external magnetometer and stay unconnected.
+* **Polled from `loop()`**, rate-limited to `MPU_READ_HZ` (100 Hz), as one 14-byte burst so accel, temperature and gyro all come from the same sample. A complementary filter (`MPU_COMP_ALPHA`, 0.98) integrates the gyro for short-term response and leans on the accelerometer's gravity vector to stop the drift — accelerometer-only tilt is unusable on a vibrating bike, and gyro-only integration wanders within seconds. Ranges default to ±4 g / ±500 dps: ±2 g resolves better but road and motor vibration clips it.
+* **A dropped sensor must never stall the bridge.** The I2C timeout is 20 ms rather than the 50 ms default, and after `MAX_CONSEC_ERRORS` (10) consecutive failures the driver marks itself absent and stops polling — otherwise every `loop()` would block for the full timeout and starve the 1200-baud UART. `process()` returns immediately when no sensor answered at boot.
+* **"Not fitted" is a supported state.** `begin()` returns false, one line goes to the serial log, `isPresent()` stays false, and the display keeps showing the bike page. Nothing else changes.
+* Readings are **not yet exposed over the API** and are not fed into the telemetry JSON — they are display-only for now. Wiring them into `/api/telemetry` (and using the tilt for the grade side of the load estimator) is the obvious next step.
 
 ### PlatformIO Environment
 * **Platform**: `espressif32@6.12.0` (Use this exact version to ensure stable Xtensa toolchains).

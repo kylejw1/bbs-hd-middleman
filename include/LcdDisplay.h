@@ -43,6 +43,16 @@
 
 #include <Arduino.h>
 #include <TFT_eSPI.h>
+#include "Mpu6050.h"
+
+// The IMU page exists only on the round target: the ST7789 is a 284x76 strip
+// with no room for six axis values plus a bubble level. On the strip, or with
+// MPU6050_ENABLED=0, this is 0 and the page costs nothing.
+#if MPU6050_ENABLED && defined(LCD_DISPLAY_GC9A01)
+  #define LCD_IMU_PAGE 1
+#else
+  #define LCD_IMU_PAGE 0
+#endif
 
 // ---------------------------------------------------------------------------
 // Forward declaration — the global singleton
@@ -218,6 +228,14 @@ private:
     bool     _spritesOk;      // false if any sprite allocation failed
     uint32_t _lastRefreshMs;
 
+#if LCD_IMU_PAGE
+    // Page 0 = bike telemetry, page 1 = IMU. The display only ever leaves page 0
+    // when an MPU-6050 actually answered on the bus, so a board without one
+    // behaves exactly as it did before.
+    uint8_t  _page;
+    uint32_t _lastPageSwitchMs;
+#endif
+
     // Dirty flags — set true when data changes
     bool _dirtyRow0;
     bool _dirtyRow1;
@@ -234,6 +252,20 @@ private:
     void _renderRow0();
     void _renderRow1();
     void _renderChart();
+
+#if LCD_IMU_PAGE
+    // Page 1: the MPU-6050 readout. Reuses the same three sprite regions as the
+    // bike page, so it costs no extra RAM.
+    void _renderImuPage();
+
+    // Force the next bike-page diff to repaint every region. Used on a page
+    // switch, so the incoming page never diffs against the other page's values.
+    void _invalidateSnapshot() {
+        memset(&_last, 0xFF, sizeof(_last));
+        _last.currentAmps = -1.0f;
+        _dirtyRow0 = _dirtyRow1 = _dirtyChart = true;
+    }
+#endif
 
     // Draw a single numeric "tile" into the sprite spr at (x, y, w, h).
     // label is the small dim label above the value.

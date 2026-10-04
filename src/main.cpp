@@ -7,6 +7,7 @@
 #include "BlePortal.h"
 #include "DebugLog.h"
 #include "LcdDisplay.h"
+#include "Mpu6050.h"
 #include <esp_log.h>
 #include <esp_ota_ops.h>
 
@@ -75,8 +76,23 @@ void setup() {
     // Initialize telemetry subsystem
     Telemetry.begin();
 
-    // Initialize optional TFT LCD display (no-op if not compiled in)
+    // Initialize optional TFT LCD display (no-op if not compiled in).
+    // Runs before the I2C sensor so the display's sprite allocation gets first
+    // call on the heap.
     Display.begin();
+
+    #if MPU6050_ENABLED
+    // Initialize the optional MPU-6050. "Not fitted" is a supported state: the
+    // driver disables itself and the display keeps showing the bike page.
+    if (Mpu.begin()) {
+        Serial.printf("[MPU] MPU-6050 at 0x%02X (WHO 0x%02X), SDA %d SCL %d @ %lu Hz\n",
+                      Mpu.address(), Mpu.whoAmI(), MPU_SDA_PIN, MPU_SCL_PIN,
+                      (unsigned long)MPU_I2C_HZ);
+    } else {
+        Serial.printf("[MPU] nothing answered on SDA %d / SCL %d (WHO_AM_I 0x%02X) - skipped\n",
+                      MPU_SDA_PIN, MPU_SCL_PIN, Mpu.whoAmI());
+    }
+    #endif
 
     // Initialize dual UART serial bridge (Controller & Display)
     Bridge.begin();
@@ -140,10 +156,14 @@ void loop() {
     Ble.process();
     #endif
 
-    // 4. Update optional TFT LCD display (rate-limited; no-op if not compiled in)
+    // 4. Poll the optional MPU-6050 (rate-limited; no-op when not fitted).
+    //    Ahead of the display so the panel renders the sample we just took.
+    Mpu.process();
+
+    // 5. Update optional TFT LCD display (rate-limited; no-op if not compiled in)
     Display.process();
 
-    // 5. Heartbeat LED animation
+    // 6. Heartbeat LED animation
     uint32_t now = millis();
     uint32_t blinkInterval = 1000; // Normal idle: 1s
 

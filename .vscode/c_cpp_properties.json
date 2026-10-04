@@ -17,6 +17,7 @@
                 "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/Update/src",
                 "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/ESPmDNS/src",
                 "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
+                "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                 "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/BLE/src",
                 "/home/kyle/dev/bbs-hd-middleman/.pio/libdeps/esp32-s3-devkitc-1/ArduinoJson/src",
                 "/home/kyle/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/newlib/platform_include",
@@ -242,7 +243,6 @@
                 "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/USB/src",
                 "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/WiFiClientSecure/src",
                 "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/WiFiProv/src",
-                "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                 ""
             ],
             "browse": {
@@ -257,6 +257,7 @@
                     "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/Update/src",
                     "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/ESPmDNS/src",
                     "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
+                    "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                     "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/BLE/src",
                     "/home/kyle/dev/bbs-hd-middleman/.pio/libdeps/esp32-s3-devkitc-1/ArduinoJson/src",
                     "/home/kyle/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/newlib/platform_include",
@@ -482,7 +483,6 @@
                     "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/USB/src",
                     "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/WiFiClientSecure/src",
                     "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/WiFiProv/src",
-                    "/home/kyle/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                     ""
                 ]
             },

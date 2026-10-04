@@ -202,6 +202,19 @@
 #define LCD_CURVE_MAX_CADENCE_RPM  120
 #endif
 
+// When an MPU-6050 is fitted, the round display alternates between the bike
+// telemetry page and the IMU page on this period. There is no room for both at
+// once on a 240 px circle.
+#ifndef LCD_PAGE_MS
+#define LCD_PAGE_MS  5000
+#endif
+
+// The IMU page draws a live bubble level, so it refreshes faster than the bike
+// page's LCD_REFRESH_MS.
+#ifndef LCD_IMU_REFRESH_MS
+#define LCD_IMU_REFRESH_MS  100
+#endif
+
 #if defined(LCD_DISPLAY_ST7789)
 // ST7789 at 76×284 in landscape = 284 wide × 76 tall.
 // Rotation 1 maps the short edge (76) to height and long edge (284) to width.
@@ -213,5 +226,74 @@
 #define LCD_ROTATION        0
 #define LCD_DISPLAY_NAME    "GC9A01"
 #endif
+
+// =============================================================================
+// MPU-6050 ACCELEROMETER / GYRO (optional, I2C)
+// =============================================================================
+// The GY-521 breakout carries an MPU-6050, which is I2C ONLY — there is no SPI
+// on that board. (The SPI-capable part is the MPU-6000, which a GY-521 does not
+// expose.) Nothing else in this firmware uses I2C, so the bus is free.
+//
+// ON BY DEFAULT: the driver costs a few KB of flash and nothing at all when no
+// sensor answers — the display just keeps showing the bike page. Set to 0 to
+// compile it out entirely.
+//
+// -----------------------------------------------------------------------------
+// PINS: 13/14 are free on BOTH supported boards, and are deliberately NOT the
+// Arduino defaults. Wire defaults to SDA 21 / SCL 22 on a classic ESP32 and
+// SDA 8 / SCL 9 on an S3 — on this project those are the LCD's CS/SCLK and
+// RST/DC respectively. Wire.begin() is therefore always called with explicit
+// pins; never call the argument-less form.
+// -----------------------------------------------------------------------------
+// POWER THE GY-521 FROM 3V3, NOT 5V. Most breakouts carry I2C pull-ups, and on
+// some clones they are tied to VCC rather than the regulator output — feed it 5V
+// and you put 5V on SDA/SCL, which damages the ESP32. At 3V3 it is safe either
+// way, and no level shifter is needed (unlike the 5V Bafang UARTs).
+//
+// ADO selects the address (GND or floating → 0x68, VCC → 0x69). XDA/XCL are for
+// an external magnetometer and are left unconnected.
+// -----------------------------------------------------------------------------
+#ifndef MPU6050_ENABLED
+#define MPU6050_ENABLED     1
+#endif
+
+#if MPU6050_ENABLED
+#ifndef MPU_SDA_PIN
+#define MPU_SDA_PIN         13
+#endif
+#ifndef MPU_SCL_PIN
+#define MPU_SCL_PIN         14
+#endif
+// Data-ready interrupt. The driver polls for now; the pin is reserved so the
+// GY-521's INT pad has a documented destination.
+#ifndef MPU_INT_PIN
+#define MPU_INT_PIN         19
+#endif
+// Drop to 100000 if the wiring is long or the bus proves unreliable.
+#ifndef MPU_I2C_HZ
+#define MPU_I2C_HZ          400000
+#endif
+
+// Full-scale ranges. ±4g / ±500 dps is the compromise for a bike: ±2g resolves
+// better but road and motor vibration can clip it.
+#ifndef MPU_ACCEL_FS
+#define MPU_ACCEL_FS        4       // 2, 4, 8 or 16 (g)
+#endif
+#ifndef MPU_GYRO_FS
+#define MPU_GYRO_FS         500     // 250, 500, 1000 or 2000 (deg/s)
+#endif
+
+// Sensor poll rate. The complementary filter integrates the gyro at this rate,
+// so it is also the effective filter update rate.
+#ifndef MPU_READ_HZ
+#define MPU_READ_HZ         100
+#endif
+
+// Complementary filter weight on the gyro: trust it for short-term motion, and
+// the accelerometer's gravity vector for the long-term reference.
+#ifndef MPU_COMP_ALPHA
+#define MPU_COMP_ALPHA      0.98f
+#endif
+#endif // MPU6050_ENABLED
 
 #endif // CONFIG_H
