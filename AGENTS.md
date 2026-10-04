@@ -159,7 +159,7 @@ The ESP32-S3 has a **single 2.4 GHz radio**, so AP+STA coexistence is slow. The 
 * If station credentials are stored, it joins the router in `WIFI_STA` only. On success it stays STA and the SoftAP + DNS captive portal are torn down.
 * If the join does not complete within `STA_CONNECT_TIMEOUT_MS`, it runs an **async** channel scan (`WiFi.scanNetworks(true, true)`, never a blocking scan in `loop()`) and brings up a SoftAP on the least-congested of channels 1/6/11.
 * If the station link drops, it waits `STA_LOST_GRACE_MS` for auto-reconnect before falling back to the SoftAP. Once on the SoftAP it does not retry the station until the user submits credentials again.
-* Wi-Fi power save goes through `applyWifiPowerSave()` in [`src/WebPortal.cpp`](file:///home/kyle/dev/bbs-hd-middleman/src/WebPortal.cpp) — **never call `WiFi.setSleep(false)` directly**. With the BLE transport compiled in it must stay at `WIFI_PS_MIN_MODEM`, because the Wi-Fi driver aborts on `WIFI_PS_NONE` while Bluetooth is enabled. BLE-free builds keep `WIFI_PS_NONE` for the lowest dashboard latency.
+* Wi-Fi power save goes through `applyWifiPowerSave()` in [`src/WebPortal.cpp`](file:///home/kyle/dev/bbs-hd-middleman/src/WebPortal.cpp) — **never call `WiFi.setSleep(false)` directly**. It must stay at `WIFI_PS_MIN_MODEM`, because the Wi-Fi driver aborts on `WIFI_PS_NONE` while Bluetooth is enabled. Since BLE is now compiled into every environment, `WIFI_PS_NONE` is effectively never used in a shipping build — only an explicit `-DBLE_TRANSPORT_ENABLED=0` build gets that lower-latency setting back.
 * The DNS server (`_dnsServer`, wildcard to the AP IP) runs **only while `_apActive`**. Captive-portal redirects (including `handleNotFound`) are likewise AP-only; in STA mode unknown paths return a real 404 so API typos stay debuggable.
 * mDNS is advertised as `http://<MDNS_HOSTNAME>.local/` (default `bbshd.local`) in both modes via `MDNS.begin()`; the hostname and current mode are exposed by `/api/info`.
 * All lifecycle work happens non-blockingly in `WebPortal::process()` driven by the `WifiPhase` state machine (`StaConnecting` → `StaConnected` / `ApScanning` → `ApOnly`). Never add a blocking wait here — it would stall `Bridge.process()` and overrun the 1200-baud UART.
@@ -180,8 +180,8 @@ The dashboard is normally reached over Wi-Fi, but a page loaded over **HTTPS** c
 * All four power-save call sites therefore go through `applyWifiPowerSave()` in [`src/WebPortal.cpp`](file:///home/kyle/dev/bbs-hd-middleman/src/WebPortal.cpp) instead of calling `WiFi.setSleep(false)` directly: `WIFI_PS_MIN_MODEM` when BLE is compiled in, `WIFI_PS_NONE` when it is not.
 * The symptom is identical to the ordering abort — `setup()` dies, `loop()` never runs, the display throws a communication error — so treat "bridge dead + display erroring" as a radio-initialisation problem, never a UART one.
 
-* **Stack**: Bluedroid (`BLEDevice.h`), the only BLE stack the precompiled `espressif32@6.12.0` SDK ships (`libbt.a`; there is no NimBLE library in that core). Guarded by `BLE_TRANSPORT_ENABLED` in [`Config.h`](file:///home/kyle/dev/bbs-hd-middleman/include/Config.h) — set it to `0` to drop roughly 700 KB flash / 30 KB RAM.
-* **Cost**: with BLE enabled the image is about 46% of the 3.19 MB app partition and 27.6% of DRAM. Both OTA slots still fit.
+* **Stack**: Bluedroid (`BLEDevice.h`), the only BLE stack the precompiled `espressif32@6.12.0` SDK ships (`libbt.a`; there is no NimBLE library in that core). On by default via `BLE_TRANSPORT_ENABLED` in [`Config.h`](file:///home/kyle/dev/bbs-hd-middleman/include/Config.h); set it to `0` to drop roughly 600 KB flash / 30 KB RAM (measured on the S3: flash 970 KB → 1,573 KB, RAM 61 KB → 91 KB).
+* **Cost**: the image is about 47% of the 3.19 MB app partition and 27.7% of DRAM on the S3, where both OTA slots still fit with room to spare. The 4 MB classic ESP32 is the tight one — see the headroom note on `[env:gc9a01-esp32]` in `platformio.ini`.
 * **Device name**: `BLE_DEVICE_NAME` (`BBSHD-Middleman`). The service UUID is advertised so `navigator.bluetooth.requestDevice({filters:[{services:[...]}]})` can match it.
 * **UUIDs and frame layout** live in [`include/BleProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/include/BleProtocol.h) and are duplicated verbatim in `web/index.html`. Change them in both places or discovery silently stops working.
 
@@ -297,12 +297,13 @@ Every dashboard call goes through `apiFetch()` in `web/index.html`, which is the
 ## 5. Build, Flash & Validation
 
 ### PlatformIO Environments
-Five environments. **`default_envs` is pinned to `esp32-s3-devkitc-1`**, so a bare `pio run` only ever touches that one — without it, `pio run -t upload` would flash *every* environment in the file.
+Four environments. **`default_envs` is pinned to `esp32-s3-devkitc-1`**, so a bare `pio run` only ever touches that one — without it, `pio run -t upload` would flash *every* environment in the file.
+
+Every environment compiles the BLE transport in. There is no separate BLE build: it was an `[env:ble]` variant while the coexistence abort was being chased, but that only created a way to flash the wrong image over the working firmware, so the default now lives in [`Config.h`](file:///home/kyle/dev/bbs-hd-middleman/include/Config.h) and the environment is gone.
 
 | Env | Command | What it is |
 | :--- | :--- | :--- |
-| `esp32-s3-devkitc-1` | `pio run -t upload` | Production. BLE off, no LCD. |
-| `ble` | `pio run -e ble -t upload` | Experimental BLE transport. Own build dir. |
+| `esp32-s3-devkitc-1` | `pio run -t upload` | Production. No LCD. |
 | `st7789` | `pio run -e st7789 -t upload` | 2.25" 76×284 strip, mounted landscape. |
 | `gc9a01` | `pio run -e gc9a01 -t upload` | 1.28" round 240×240, on the S3. |
 | `gc9a01-esp32` | `pio run -e gc9a01-esp32 -t upload` | 1.28" round 240×240, on a classic ESP32. |
@@ -315,7 +316,7 @@ Each has its own `.pio/build/<env>` directory, so switching never risks flashing
 `[env:gc9a01-esp32]` targets a classic ESP32 rather than an S3, which changes four things:
 
 * **Different chip target**: `board = esp32dev`, and the S3-only `-DARDUINO_USB_CDC_ON_BOOT` / `-DARDUINO_USB_MODE` flags are **absent**. There is no native USB on this chip — `Serial` goes out over UART0 through the on-board USB-serial bridge.
-* **4MB flash, not 8MB**: `default_8MB.csv` places app0 at 0x10000 with size 0x330000, which runs off the end of a 4MB part. That environment uses `min_spiffs.csv` (two 1.92MB OTA slots). Note `default.csv` gives only 1.31MB per slot, which the **BLE build (1.57MB) does not fit** — the LCD build alone does.
+* **4MB flash, not 8MB**: `default_8MB.csv` places app0 at 0x10000 with size 0x330000, which runs off the end of a 4MB part. That environment uses `min_spiffs.csv` (two 1.92MB OTA slots). BLE plus the LCD is ~1.85MB — **94% of a 1.92MB slot** — so it fits and OTA still works, but only ~119KB is spare and this is the one environment with no room to grow. `min_spiffs` also reserves a 128KB spiffs partition that nothing in this firmware opens (there is no filesystem use in `src/` at all), so folding it into the app slots would buy back ~98KB if that is ever needed. Note `default.csv` gives only 1.31MB per slot, which this build does not fit at all.
 * **Different LCD pins, and this is the dangerous one**: on classic ESP32, **GPIO 6–11 are the SPI flash bus**. The S3 default set (MOSI 11, CS 10, DC 9, RST 8) sits directly on top of it and will crash the chip or corrupt flash; SCLK was on GPIO12, the MTDI strapping pin that selects flash voltage. That environment remaps all five.
 * **No GPIO48**: classic GPIOs stop at 39, so the status LED moves to GPIO25.
 

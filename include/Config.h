@@ -118,19 +118,23 @@
 // That BLE link is a convenience, never a replacement: the on-device copy is
 // what keeps working on iOS Safari, where Web Bluetooth does not exist.
 //
-// Set to 0 to build without Bluedroid (saves roughly 700 KB flash / 60 KB RAM).
+// Set to 0 to build without Bluedroid (saves roughly 600 KB flash / 30 KB RAM).
 //
-// DEFAULT OFF: the BLE transport broke the bridge on real hardware -- the display
-// threw a communication error, meaning setup() never reached loop() and the
-// 1200-baud pass-through never ran. Nothing else depends on it, so the firmware
-// ships with it disabled until that is understood and fixed.
+// ON BY DEFAULT, in every environment. It used to be gated behind its own
+// [env:ble] because the Bluedroid coexistence abort killed setup() outright and
+// the display threw a communication error. That is fixed by the init ordering in
+// setup() (Bluetooth before Wi-Fi) together with applyWifiPowerSave() in
+// WebPortal, so the transport now ships everywhere and there is no longer a
+// second environment that can be flashed over the working firmware by mistake.
 //
-// The #ifndef lets a build flag override it without editing this file, so the
-// safe default stays in the tree while BLE is tested:
+// The #ifndef is kept so a one-off BLE-free build remains possible:
 //
-//     PLATFORMIO_BUILD_FLAGS="-DBLE_TRANSPORT_ENABLED=1" pio run -t upload
+//     PLATFORMIO_BUILD_FLAGS="-DBLE_TRANSPORT_ENABLED=0" pio run -e <env> -t upload
+//
+// PlatformIO does not reliably notice a changed build flag, so clear
+// .pio/build/<env> first or the stale BLE image is what gets flashed.
 #ifndef BLE_TRANSPORT_ENABLED
-#define BLE_TRANSPORT_ENABLED   0
+#define BLE_TRANSPORT_ENABLED   1
 #endif
 
 #define BLE_DEVICE_NAME         "BBSHD-Middleman"
