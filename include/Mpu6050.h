@@ -52,6 +52,35 @@ public:
     uint32_t readErrors()   const { return _readErrors; }
     const Sample& sample()  const { return _s; }
 
+    // --- Calibrated views of the estimate ---------------------------------
+    //
+    // The estimator works in ABSOLUTE terms: sample().pitchDeg/rollDeg are
+    // angles relative to gravity. That has to stay true -- the residual gate in
+    // bike_pitch_algorithm.md compares f_x against g*sin(theta_pred), which is
+    // only meaningful against an absolute theta, and it is what makes the boot
+    // seed valid.
+    //
+    // But the board is bolted into a housing, so "absolute" is not the same as
+    // "level on the bike". However the sensor happens to sit in its mount is a
+    // permanent bias on every reading, and it would otherwise show up as a
+    // slope you are not actually climbing and a grade fed to the motor
+    // controller that is wrong by a constant.
+    //
+    // slopeDeg()/leanDeg() remove it, by subtracting the attitude measured
+    // during the stationary boot calibration. Zero therefore means level *on
+    // this bike*. The offset is applied at read time and never fed back, so the
+    // filter is untouched: these are views of the same estimate, not a second
+    // one, and nothing in the algorithm can see the difference.
+    //
+    // The consequence is that the absolute grade reference is given up at
+    // power-on. Boot with the bike level, or slopeDeg() is zeroed to whatever
+    // slope it was parked on. Recalibrating means power-cycling it level, which
+    // is why begin() logs the captured zero.
+    float slopeDeg() const { return _s.pitchDeg - _slopeZeroDeg; }
+    float leanDeg()  const { return _s.rollDeg  - _leanZeroDeg; }
+    float slopeZeroDeg() const { return _slopeZeroDeg; }
+    float leanZeroDeg()  const { return _leanZeroDeg; }
+
 private:
     bool writeReg(uint8_t reg, uint8_t val);
     bool readRegs(uint8_t reg, uint8_t* buf, uint8_t len);
@@ -85,6 +114,12 @@ private:
     float    _pitchRad      = 0.0f;    // theta, radians, nose up positive
     float    _rollRad       = 0.0f;    // phi, radians
     float    _biasYOnline   = 0.0f;    // rad/s, integral term on the pitch axis
+
+    // Attitude at power-on, subtracted by slopeDeg()/leanDeg(). Captured in
+    // calibrate() from the same averaged sample that seeds the estimator, so
+    // the offset costs no extra sampling and adds no noise of its own.
+    float    _slopeZeroDeg  = 0.0f;
+    float    _leanZeroDeg   = 0.0f;
 };
 
 extern Mpu6050 Mpu;
@@ -111,6 +146,14 @@ public:
     inline uint16_t sampleRateHz() const { return 0; }
     inline uint32_t readErrors()   const { return 0; }
     inline const Sample& sample()  const { return _s; }
+
+    // Same surface as the real class, so consumers need no #ifdef. There is no
+    // sensor to calibrate, so every one of these is zero -- which is also what
+    // a real sensor reports when it is level.
+    inline float    slopeDeg()     const { return 0.0f; }
+    inline float    leanDeg()      const { return 0.0f; }
+    inline float    slopeZeroDeg() const { return 0.0f; }
+    inline float    leanZeroDeg()  const { return 0.0f; }
 
 private:
     Sample _s = {};

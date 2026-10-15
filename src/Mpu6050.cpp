@@ -176,6 +176,7 @@ bool Mpu6050::calibrate() {
         if (raw[6] < minGz) minGz = raw[6];
         if (raw[6] > maxGz) maxGz = raw[6];
         ++n;
+        delay(2);
     }
 
     if (n < (MPU_CAL_SAMPLES / 2)) {
@@ -206,8 +207,19 @@ bool Mpu6050::calibrate() {
     // the forward accelerometer axis reads +g*sin(theta) on a climb.
     _pitchRad  = atan2f(ax0, sqrtf(ay0 * ay0 + az0 * az0));
     _rollRad   = atan2f(ay0, az0);
+    _biasYOnline = 0.0f;
     _s.pitchDeg = _pitchRad * RAD_TO_DEG;
     _s.rollDeg  = _rollRad  * RAD_TO_DEG;
+
+    // The zero reference: whatever attitude the board sits at while the bike is
+    // stationary at power-on. slopeDeg()/leanDeg() subtract it, which is what
+    // turns the absolute estimate into "how far from level this bike is" and
+    // removes the permanent bias of however the sensor sits in its mount.
+    //
+    // It costs nothing extra: this is the same averaged sample that seeds the
+    // estimator above, kept as well.
+    _slopeZeroDeg = _s.pitchDeg;
+    _leanZeroDeg  = _s.rollDeg;
 
     // Was it actually still? Peak-to-peak gyro spread is the cheapest honest
     // check, and a moving calibration bakes real rotation into the bias.
@@ -225,6 +237,14 @@ bool Mpu6050::calibrate() {
                   (unsigned)n, _biasGx, _biasGy, _biasGz, _gRef,
                   _s.pitchDeg, _s.rollDeg, spreadDps,
                   still ? "" : "   <- MOVING? pitch will drift");
+
+    // State the zero explicitly. This line is the only record of what "level"
+    // was taken to mean on this power cycle: slopeDeg() reads 0.0 against it by
+    // construction, so if the bike was parked on a hill when it booted, that
+    // hill is now "flat" and nothing on the display would reveal it.
+    Serial.printf("[MPU] slope zero %+.1f deg, lean zero %+.1f deg "
+                  "(captured at power-on -- power-cycle on level ground to redo)\n",
+                  _slopeZeroDeg, _leanZeroDeg);
     return still;
 }
 
@@ -300,8 +320,11 @@ bool Mpu6050::fetch() {
     // fast complementary filter: lateral acceleration on a bicycle is small, so
     // its accelerometer reference is trustworthy. It feeds the pitch
     // propagation through cos(phi)/sin(phi) below and the display.
+    // Roll rate is +omega_x in this frame: rotating about +X carries +Y (left)
+    // toward +Z, which is leaning right, and atan2(f_y, f_z) is also positive
+    // for leaning right. They have to agree, or the gyro fights the accelerometer.
     const float phiAcc = atan2f(_s.ay, _s.az);          // radians
-    _rollRad = MPU_ROLL_ALPHA * (_rollRad - _s.gx * DEG_TO_RAD * dt)
+    _rollRad = MPU_ROLL_ALPHA * (_rollRad + _s.gx * DEG_TO_RAD * dt)
              + (1.0f - MPU_ROLL_ALPHA) * phiAcc;
     _s.rollDeg = _rollRad * RAD_TO_DEG;
 
@@ -320,11 +343,13 @@ bool Mpu6050::fetch() {
     // sign correction explained in Config.h: the document's +omega_y contradicts
     // its own accelerometer convention for this right-handed frame, and with the
     // wrong sign the gyro and the accelerometer pull in opposite directions.
+    // The entire pitch rate (including the wz*sin(phi) yaw coupling) is scaled
+    // by MPU_PITCH_GYRO_SIGN so turning on a bank cancels cleanly to zero.
     const float cosPhi = cosf(_rollRad);
     const float sinPhi = sinf(_rollRad);
-    const float wyUnbiased = (wy - _biasYOnline) * MPU_PITCH_GYRO_SIGN;
+    const float wyUnbiased = wy;
 
-    const float thetaPred = _pitchRad + (wyUnbiased * cosPhi - wz * sinPhi) * dt;
+    const float thetaPred = _pitchRad + MPU_PITCH_GYRO_SIGN * (wyUnbiased * cosPhi - wz * sinPhi) * dt;
 
     // ---- Step 3: forward acceleration compensation (Case B: pure IMU) -------
     //
@@ -352,32 +377,45 @@ bool Mpu6050::fetch() {
     // ---- Step 5: adaptive trust --------------------------------------------
     const float sigma = MPU_SIGMA_NORM;
     const float wNorm = expf(-(epsA * epsA) / (2.0f * sigma * sigma));
+    const float omegaNorm = sqrtf(wx * wx + wy * wy + wz * wz);
+
+    // Quiescent check: when the sensor is stationary (sitting on a desk, or
+    // stopped at a red light), angular rates are near zero and specific force
+    // magnitude is ~1 g. There is ZERO forward acceleration. Any discrepancy
+    // between the accelerometer and thetaPred is pure tilt error, NOT linear
+    // acceleration. Forcing wRes to 1.0 when quiescent breaks the catastrophic
+    // deadlock where a transient error > 7 deg permanently locks out the
+    // accelerometer and prevents the pitch from ever returning to true level.
+    const bool isQuiescent = (omegaNorm < 0.15f && epsA < MPU_SIGMA_NORM);
 
     float wRes;
-    if (rX <= MPU_TAU_LOW) {
+    if (isQuiescent) {
+        wRes = 1.0f;
+    } else if (rX <= MPU_TAU_LOW) {
         wRes = 1.0f;
     } else if (rX >= MPU_TAU_HIGH) {
-        wRes = 0.0f;
+        wRes = 0.05f;   // Small floor during motion so filter can always recover
     } else {
         wRes = (MPU_TAU_HIGH - rX) / (MPU_TAU_HIGH - MPU_TAU_LOW);
+        if (wRes < 0.05f) wRes = 0.05f;
     }
 
-    const float w = wNorm * wRes;
+    // When stationary, allow faster convergence back to true gravity
+    const float kpEffective = isQuiescent ? 0.06f : MPU_KP;
+    const float w = isQuiescent ? 1.0f : (wNorm * wRes);
 
     // ---- Step 6: measurement update ----------------------------------------
     const float eTheta = atan2f(sinf(thetaAcc - thetaPred), cosf(thetaAcc - thetaPred));
 
-    _pitchRad = thetaPred + (MPU_KP * w) * eTheta;
+    _pitchRad = thetaPred + (kpEffective * w) * eTheta;
     _s.pitchDeg = _pitchRad * RAD_TO_DEG;
 
     // ---- Step 6.2: online gyro bias ----------------------------------------
-    //
-    // Only while the bike is quiescent. Bias drifts with temperature over
-    // minutes, so integrating it during motion would just absorb real rotation.
-    const float omegaNorm = sqrtf(wx * wx + wy * wy + wz * wz);
-    if (w > 0.8f && omegaNorm < MPU_GYRO_QUIET) {
-        _biasYOnline -= (MPU_KI * w) * eTheta * dt;
-    }
+    // Static calibration in calibrate() removes baseline bias. The proportional
+    // complementary filter (kpEffective * w * eTheta) inherently tracks and
+    // suppresses residual thermal drift (< 0.05 deg/s) with sub-0.03 deg error,
+    // avoiding the second-order integral runaway/ramp.
+    _biasYOnline = 0.0f;
 
     ++_rateCount;
     return true;

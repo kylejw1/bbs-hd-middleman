@@ -1,4 +1,5 @@
 #include "Telemetry.h"
+#include "Mpu6050.h"
 
 TelemetryTracker Telemetry;
 
@@ -301,6 +302,52 @@ void TelemetryTracker::buildTelemetryJson(JsonDocument& doc) {
 
         doc["displayConnected"] = isDisplayActive();
         doc["controllerConnected"] = isControllerActive();
+
+        // MPU-6050 attitude. Emitted from here rather than from the route
+        // handler because buildTelemetryJson is the single builder behind both
+        // the HTTP poll and the BLE push -- so the two can never disagree about
+        // what the sensor is reading, exactly like every other field.
+        //
+        // The grade is clamped at 45 degrees for the same reason the LCD clamps
+        // it: tan() runs to infinity at 90 and a diverging estimate would
+        // otherwise print thousands of percent. The raw pitch above it is
+        // unclamped, so a bad estimate stays visible as an angle.
+        const bool imuOk = Mpu.isPresent();
+        const Mpu6050::Sample& imu = Mpu.sample();
+
+        doc["hasImu"] = imuOk;
+        doc["imuAx"] = serialized(String(imuOk ? imu.ax : 0.0f, 3));
+        doc["imuAy"] = serialized(String(imuOk ? imu.ay : 0.0f, 3));
+        doc["imuAz"] = serialized(String(imuOk ? imu.az : 0.0f, 3));
+        doc["imuGx"] = serialized(String(imuOk ? imu.gx : 0.0f, 1));
+        doc["imuGy"] = serialized(String(imuOk ? imu.gy : 0.0f, 1));
+        doc["imuGz"] = serialized(String(imuOk ? imu.gz : 0.0f, 1));
+        doc["imuTempC"] = serialized(String(imuOk ? imu.tempC : 0.0f, 1));
+        doc["imuPitchDeg"] = serialized(String(imuOk ? imu.pitchDeg : 0.0f, 1));
+        doc["imuRollDeg"] = serialized(String(imuOk ? imu.rollDeg : 0.0f, 1));
+
+        // The calibrated pair, which is what the display and the dashboard show.
+        // imuPitchDeg/imuRollDeg above are the estimator's ABSOLUTE output --
+        // what the filter needs, and what makes a bad boot calibration visible.
+        // These have the mounting bias subtracted, so 0.0 means level on this
+        // bike. Two genuinely different quantities, not one value published
+        // twice, which is why both are here.
+        doc["imuSlopeDeg"] = serialized(String(imuOk ? Mpu.slopeDeg() : 0.0f, 1));
+        doc["imuLeanDeg"]  = serialized(String(imuOk ? Mpu.leanDeg()  : 0.0f, 1));
+
+        // The attitude that was treated as level at power-on. Diagnostic: a
+        // large value means the bike was parked on a slope when it booted, so
+        // "level" was taken to mean that slope until the next power cycle.
+        doc["imuSlopeZeroDeg"] = serialized(String(imuOk ? Mpu.slopeZeroDeg() : 0.0f, 1));
+
+        // No grade-in-percent field. tan(pitch) is the same slope as rise over
+        // run, but it is not an angle: it runs to infinity at 90 degrees and
+        // needed clamping to stay printable. imuSlopeDeg above already is the
+        // slope in degrees, which is the number that compares against a map or
+        // a road sign, so the percentage was a second representation of one
+        // quantity and is gone.
+
+        doc["imuRateHz"] = imuOk ? Mpu.sampleRateHz() : 0;
 
         doc["fwVersion"] = String(_fwMajor) + "." + String(_fwMinor) + "." + String(_fwPatch);
         doc["configVersion"] = _configVersion;

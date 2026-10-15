@@ -146,12 +146,33 @@ uint8_t WebPortal::pickBestApChannel() {
 }
 
 void WebPortal::startAccessPoint(uint8_t channel) {
+    // Cancel any channel scan first. Calling esp_wifi_set_mode() while the
+    // station interface is still scanning can leave the new AP beaconing with a
+    // broken security configuration -- which the phone reports as a wrong
+    // password, not as a driver error. On first boot the scan is exactly what
+    // precedes this call, and on the timeout path it may still be running.
+    WiFi.scanDelete();
+
     // AP_STA with an idle station keeps the door open for a later join request
     // without paying any coexistence cost (the STA interface is not associated).
     WiFi.mode(WIFI_AP_STA);
     applyWifiPowerSave();
-    if (!WiFi.softAP(DEFAULT_AP_SSID, DEFAULT_AP_PASS, channel, 0, DEFAULT_AP_MAX_CONN)) {
-        Serial.println("[WebPortal] SoftAP start FAILED");
+
+    bool ok = WiFi.softAP(DEFAULT_AP_SSID, DEFAULT_AP_PASS, channel, 0, DEFAULT_AP_MAX_CONN);
+    if (!ok && channel != DEFAULT_AP_CHANNEL) {
+        Serial.printf("[WebPortal] SoftAP failed on channel %u; retrying on %u\n",
+                      (unsigned)channel, (unsigned)DEFAULT_AP_CHANNEL);
+        channel = DEFAULT_AP_CHANNEL;
+        ok = WiFi.softAP(DEFAULT_AP_SSID, DEFAULT_AP_PASS, channel, 0, DEFAULT_AP_MAX_CONN);
+    }
+
+    if (!ok) {
+        // Do NOT set _apActive or start the DNS server. Carrying on regardless
+        // would advertise an access point that is not there and print a success
+        // line for it, which sends anyone debugging this down the wrong path.
+        Serial.println("[WebPortal] SoftAP start FAILED - no access point");
+        _wifiPhase = WifiPhase::ApOnly;
+        return;
     }
 
     IPAddress apIP = WiFi.softAPIP();

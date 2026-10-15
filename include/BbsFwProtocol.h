@@ -24,6 +24,8 @@ constexpr uint8_t OPCODE_WRITE_EVTLOG_ENABLE    = 0xf0;
 constexpr uint8_t OPCODE_WRITE_CONFIG           = 0xf1;
 constexpr uint8_t OPCODE_WRITE_RESET_CONFIG     = 0xf2;
 constexpr uint8_t OPCODE_WRITE_ADC_VOLTAGE_CALIBRATION = 0xf3;
+constexpr uint8_t OPCODE_WRITE_INCLINATION          = 0xf4;
+constexpr size_t  INCLINATION_FRAME_SIZE            = 7;
 
 // Bafang standard display opcodes
 constexpr uint8_t OPCODE_DISPLAY_READ_STATUS    = 0x08;

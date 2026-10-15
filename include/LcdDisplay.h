@@ -15,14 +15,26 @@
 // Layout (ST7789, landscape 284×76):
 //   Row 0 (top 18 px): cadence | motor RPM | target I% | target spd%
 //   Row 1 (next 18 px): batt% | current A | watts | PAS level
-//   Chart (remaining ~40 px): per-level PAS current curve + live cadence cursor
+//   Chart (remaining ~40 px): the active level's PAS current curve, filled,
+//                             with a marker at the live cadence/current point
 //
 // Layout (GC9A01, 240×240 circle — only the inscribed r=120 circle is visible):
-//   Row 0 (y 44..80):  cadence | motor RPM                        (2 tiles)
-//   Row 1 (y 82..118): target I% | target spd%                    (2 tiles)
-//   Chart (y 122..214): PAS curve for all 10 active-mode levels, live cursor,
-//                       plus a centred batt/A/W/PAS status line underneath
-//   A four-across tile row only fits at y=120, so this target goes two-across.
+//   Chart (y 48..104):  the active level's PAS current curve, filled, with a
+//                       marker at the live cadence/current point. NO TEXT.
+//   Row 0 (y 108..130): cadence (left, x=54) | target I% (right, x=186)
+//   Row 1 (y 132..220): the hero slope in degrees at font 6 (48 px), centred,
+//                       with target speed % directly beneath it
+//
+//   Values only — no tile frames and no labels. The frame was the grid and the
+//   label was a title, and on a 240 px circle both cost more room than the
+//   numbers they annotated. A four-across tile row only fits at y=120, so this
+//   target never used one.
+//   Content is rotated 90 degrees clockwise by LCD_ROTATION. The circle itself
+//   is rotation-invariant, so no geometry below changes with it.
+//
+// The chart draws exactly ONE curve: the selected assist level. It used to draw
+// all ten with the inactive nine greyed out, which on a 64 px chart was more
+// detail than can be read at a glance.
 //
 // Rendering strategy: dirty-region sprites. The display is divided into fixed
 // rectangular regions; each region has a TFT_eSprite that is pushed only when
@@ -164,33 +176,42 @@ private:
     //
     // That rules out the ST7789 layout here: a row `rowW` wide is only fully
     // visible when |y - 120| <= sqrt(120^2 - (rowW/2)^2), which for a 240 px
-    // row is true only at y = 120. The four-across rows at the top of the
-    // circle would be almost entirely hidden behind the bezel.
+    // row is true only at y = 120. Four-across rows at the top of the circle
+    // would be almost entirely hidden behind the bezel, so this target inverts
+    // the arrangement: the graph goes in the top band where the circle is still
+    // usable, and the numbers stack below it around one hero value.
     //
-    // So this target goes two-across, inset, with the chart in the middle band
-    // where the circle is widest, and a centred status line underneath. Every
-    // region below is inside the circle at its own corners:
-    //   rows  180 px wide at x=30 → corners at r ≈ 118 (y=44) .. 98 (y=118)
-    //   chart 192 px wide at x=24, y=122..186 → worst corner r ≈ 116
+    //   chart  192 px wide at x=24, y=48..104  → needs y >= 48, see below
+    //   row 0  240 px sprite at y=108, content centred at x=54 and x=186
+    //   row 1  240 px sprite at y=132..220, content centred
     static constexpr int16_t W = 240;
     static constexpr int16_t H = 240;
 
-    static constexpr int16_t TILES_PER_ROW = 2;
-    static constexpr int16_t TILE_W  = 90;
-    static constexpr int16_t TILE_X0 = (W - TILES_PER_ROW * TILE_W) / 2;  // 30
-
-    static constexpr int16_t ROW0_H  = 36;
-    static constexpr int16_t ROW1_H  = 36;
-    static constexpr int16_t ROW0_Y  = 44;
-    static constexpr int16_t ROW1_Y  = ROW0_Y + ROW0_H + 2;   // 82
-
+    // --- Chart: curve and cursor only, no text at all ---
+    // A 192 px wide region is only fully inside the circle where
+    // |y-120| <= sqrt(120^2 - 96^2) = 72, so the chart cannot start above y=48.
     static constexpr int16_t CHART_X = 24;
     static constexpr int16_t CHART_W = 192;
-    static constexpr int16_t CHART_Y = ROW1_Y + ROW1_H + 4;   // 122
-    static constexpr int16_t CHART_H = 92;                    // through y = 214
-    // Curve occupies the top of the chart sprite; the remainder is the status
-    // line, which is kept centred and short enough to stay inside the circle.
-    static constexpr int16_t CURVE_H = 64;
+    static constexpr int16_t CHART_Y = 48;
+    static constexpr int16_t CHART_H = 56;
+    static constexpr int16_t CURVE_H = CHART_H;   // the chart is all curve now
+
+    // --- Row 0: the two values flanking the big slope ---
+    // Full-width sprite with inset content: a 240 px row is not fully visible
+    // this high up, but these two values are centred well inside the circle.
+    static constexpr int16_t ROW0_Y    = 108;
+    static constexpr int16_t ROW0_H    = 22;
+    static constexpr int16_t FLANK_L_X = 54;
+    static constexpr int16_t FLANK_R_X = 186;
+
+    // --- Row 1: the hero slope, with one value beneath it ---
+    static constexpr int16_t ROW1_Y = 132;
+    static constexpr int16_t ROW1_H = 88;
+
+    // Layout inside row 1. TFT_eSPI's font 6 is 48 px tall; the sub-value sits
+    // under it. Both are vertically centred on the sprite's own width.
+    static constexpr int16_t BIG_SLOPE_TOP = 4;
+    static constexpr int16_t SUB_VALUE_CY  = 72;
 #endif
 
     // Sprites — one per region, allocated in begin(). Common to both targets so
@@ -207,6 +228,13 @@ private:
         uint8_t  motorRpm;
         uint8_t  targetCurrentPct;
         uint8_t  targetSpeedPct;
+        // Calibrated slope in tenths of a degree -- exactly the number the
+        // GC9A01 row-0 tile prints. Kept as an integer so a repaint is driven
+        // by "the displayed text changed" rather than a float epsilon, and so
+        // the memset(0xFF) invalidation compares correctly instead of leaving
+        // NaN in the field (any comparison against NaN is false, which would
+        // silently suppress the first paint).
+        int16_t  slopeDeg10;
         uint8_t  batteryPct;
         float    currentAmps;
         uint16_t powerWatts;

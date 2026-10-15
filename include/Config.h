@@ -204,18 +204,20 @@
 
 // Which page the round display shows, and whether it alternates.
 //
-//   0 = bike telemetry page (PAS curve, cadence, targets)
+//   0 = bike telemetry page (PAS curve, cadence, slope, targets)
 //   1 = IMU readout page (accel / gyro / temperature / bubble level)
 //
 // There is no room for both at once on a 240 px circle, so LCD_START_PAGE picks
-// the one the display sits on. It currently favours the IMU page, because that
-// is what is being brought up.
+// the one the display sits on. It sits on the bike page: the curve and the two
+// targets are what the rider can act on, and the slope now has its own numeric
+// tile there, so the IMU page is the one that can afford to be hidden.
 //
 // LCD_PAGE_MS is how long to hold each page before switching. **0 disables the
 // alternating entirely** and pins the display to LCD_START_PAGE. The cycling
-// code is all still there and still correct -- it just never fires.
+// code is all still there and still correct -- it just never fires. Set it
+// non-zero to bring the alternation back.
 #ifndef LCD_START_PAGE
-#define LCD_START_PAGE  1
+#define LCD_START_PAGE  0
 #endif
 #ifndef LCD_PAGE_MS
 #define LCD_PAGE_MS     0
@@ -234,8 +236,14 @@
 #define LCD_DISPLAY_NAME    "ST7789"
 
 #elif defined(LCD_DISPLAY_GC9A01)
-// GC9A01 240×240 round. No rotation needed (it's a circle).
-#define LCD_ROTATION        0
+// GC9A01 240x240 round. "It's a circle, so it needs no rotation" is wrong about
+// the thing that actually matters: the circle is rotation-invariant, but the
+// readout inside it is not. This sets which way up the rider sees it.
+//
+// 1 = 90 degrees clockwise from the panel's native orientation. Because the
+// panel is square, W and H are unchanged and none of the layout constants need
+// adjusting -- only the content turns.
+#define LCD_ROTATION        1
 #define LCD_DISPLAY_NAME    "GC9A01"
 #endif
 
@@ -301,6 +309,23 @@
 #define MPU_READ_HZ         100
 #endif
 
+// How often the middleman broadcasts inclination (pitch & roll) to the
+// motor controller over UART (ms). 500 ms (2 Hz) matches bbs-fw's 0xEC
+// telemetry cadence and consumes ~12% of the 1200 baud link. Set to 0 to disable.
+#ifndef MPU_PITCH_BROADCAST_MS
+#define MPU_PITCH_BROADCAST_MS 500
+#endif
+
+// DEBUG: Temporarily substitute the pitch angle (degrees) in place of the
+// wheel speed reading sent to the HMI display. The display expects motor RPM
+// which it converts to km/h using wheel circumference; we back-calculate the
+// RPM that would produce a display reading equal to the pitch angle value in
+// km/h units (e.g. 15.2 degrees -> display shows 15.2 km/h).
+// Set to 0 to restore normal speed display.
+#ifndef MPU_PITCH_AS_SPEED_DISPLAY
+#define MPU_PITCH_AS_SPEED_DISPLAY 1
+#endif
+
 // -----------------------------------------------------------------------------
 // Pitch estimator tuning -- implements bike_pitch_algorithm.md
 //
@@ -348,6 +373,15 @@
 // online bias integrator is allowed to run. 0.05 rad/s is about 2.8 deg/s.
 #ifndef MPU_GYRO_QUIET
 #define MPU_GYRO_QUIET      0.05f
+#endif
+
+// Hard limit on the online gyro bias estimate, deg/s. A real bias is a fraction
+// of a degree per second, so this is purely a backstop: the bias integrator is
+// the one state that can run away, and a sign slip there drives the pitch to
+// +/-90 degrees and the grade readout into the thousands of percent before
+// anything else looks wrong. Clamping makes that fail visible instead of absurd.
+#ifndef MPU_BIAS_LIMIT_DPS
+#define MPU_BIAS_LIMIT_DPS  5.0f
 #endif
 
 // Gravity, m/s^2.
