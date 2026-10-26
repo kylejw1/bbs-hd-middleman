@@ -79,6 +79,21 @@ class BaroGrade(
         private const val MAX_GRADE_PCT = 40.0
 
         /**
+         * Largest residual, in metres, a fit may have and still be believed. A
+         * genuine gradient's samples sit within centimetres of the line; a
+         * jitter-driven one scatters by metres.
+         */
+        private const val MAX_RESIDUAL_M = 0.55
+
+        /**
+         * How fast the reported grade may move, in percent per second. Real
+         * gradients change slowly; anything faster is the fit being noisy, and
+         * clipping it turns a jumpy readout into a short ramp without hiding the
+         * change. 3 %/s crosses a whole assist-level band in a third of a second.
+         */
+        private const val MAX_GRADE_SLEW_PCT_PER_S = 3.0
+
+        /**
          * Level for a grade: 1 + one per whole percent, clamped to the Bafang
          * range. Negative grade floors below 1 and clamps, so downhill keeps
          * level 1 like flat ground.
@@ -116,6 +131,7 @@ class BaroGrade(
     private var gpsRunning = false
 
     private var lastGrade = 0.0
+    private var lastGradeMs = 0L
 
     val available: Boolean get() = pressure != null
 
@@ -255,8 +271,17 @@ class BaroGrade(
         push(distanceM, altitudeOf(median), now)
 
         val grade = fit(now) ?: return
-        lastGrade = grade
-        onGrade(grade)
+
+        // Slew-limit the output as well: even a well-conditioned fit wobbles, and
+        // a readout that cannot jump is worth more than one that is 0.2 s fresher.
+        val sinceMs = if (lastGradeMs == 0L) 0.0 else ((now - lastGradeMs) / 1000.0).coerceAtMost(0.5)
+        lastGradeMs = now
+        val maxStep = MAX_GRADE_SLEW_PCT_PER_S * sinceMs
+        val shown = if (sinceMs <= 0.0) grade
+                    else lastGrade + (grade - lastGrade).coerceIn(-maxStep, maxStep)
+
+        lastGrade = shown
+        onGrade(shown)
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
@@ -318,7 +343,23 @@ class BaroGrade(
             cov += ds * (altBuf[at] - meanH)
             varS += ds * ds
         }
-        if (varS <= 1e-6) return null
+        // A fit is only meaningful if the distance actually spread out. With a
+        // near-constant s, dividing by its variance turns a few pascals of
+        // pressure noise into tens of percent of grade -- which is exactly what
+        // "the pressure is steady but the slope jumps" looks like. Require the
+        // sample positions to span at least 2 m (one standard deviation).
+        if (varS < count * 4.0) return null
+
+        // Reject a fit whose residuals are larger than the climb it claims: that
+        // is noise fitting noise, not a gradient.
+        var resid = 0.0
+        for (i in 0 until count) {
+            val at = (head + i) % CAPACITY
+            val predicted = meanH + (cov / varS) * (distBuf[at] - meanS)
+            val e = altBuf[at] - predicted
+            resid += e * e
+        }
+        if (kotlin.math.sqrt(resid / count) > MAX_RESIDUAL_M) return null
 
         return ((cov / varS) * 100.0).coerceIn(-MAX_GRADE_PCT, MAX_GRADE_PCT)
     }
