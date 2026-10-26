@@ -279,6 +279,22 @@ Two consequences worth knowing:
   override and the display gets control back. Without that the bike would be stuck at
   the last commanded level with dead buttons.
 
+## The hero row
+
+Four large figures above the curve: **SLOPE**, **KM/H**, **CADENCE** and **PAS**.
+
+**SLOPE is in degrees, from whichever source is real.** If the bike reports an IMU
+(`hasImu`), that is the sensor's calibrated slope. If it does not — this bike has no
+MPU-6050 — the hero falls back to the phone's barometric grade, converted from
+percent to degrees with `atan`, so the number keeps its unit and its label. Before
+that fallback existed the hero read `--` permanently on any bike without an IMU,
+which is why it looked frozen.
+
+CADENCE and PAS come from the `0xEC` target frame; CADENCE reads `--` whenever that
+frame is absent, because a stale pedal rate is worse than a blank one.
+
+The grid below no longer repeats CADENCE and ASSIST — they moved up to the heroes.
+
 ## Phone sensors on the dashboard
 
 Three cells in the same grid as the bike values, fed by the phone rather than the

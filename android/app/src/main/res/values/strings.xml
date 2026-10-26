@@ -9,6 +9,8 @@
     <string name="plus">+</string>
     <string name="label_slope">SLOPE</string>
     <string name="label_kmh">KM/H</string>
+    <string name="label_cadence">CADENCE</string>
+    <string name="label_pas">PAS</string>
     <string name="label_events">EVENTS</string>
     <string name="no_events">No events yet</string>
     <string name="tab_dashboard">DASHBOARD</string>

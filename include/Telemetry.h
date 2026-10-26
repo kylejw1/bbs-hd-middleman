@@ -98,6 +98,7 @@ private:
     int8_t _controllerTempC;
     int8_t _motorTempC;
     float _wheelSizeInch;
+    float _lastGoodSpeedKph;
 
     // Live bbs-fw motor targets (from the 0xEC debug telemetry frame)
     bool _hasTargetTelemetry;

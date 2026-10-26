@@ -19,6 +19,7 @@ TelemetryTracker::TelemetryTracker()
     , _controllerTempC(25)
     , _motorTempC(25)
     , _wheelSizeInch(27.5f)
+    , _lastGoodSpeedKph(0.0f)
     , _hasTargetTelemetry(false)
     , _lastTargetTelemetryMs(0)
     , _targetCurrentPercent(0)
@@ -53,7 +54,17 @@ void TelemetryTracker::begin() {
 void TelemetryTracker::recalculateSpeed() {
     // RPM to km/h: speed = (rpm * 60 * wheel_diameter_inches * 0.0254 * PI) / 1000
     // simplified: speed = rpm * wheel_diameter_inches * 0.00478778f
-    _speedKph = _speedRpm * _wheelSizeInch * 0.00478778f;
+    // A 27.5 inch wheel is 0.1317 km/h per rpm, so 800 rpm is already 105 km/h.
+    // Anything beyond this is a mis-framed response (an event frame swallowed as
+    // a speed reply), not a bicycle, and rendering it would put four digits in a
+    // readout that has only ever meant two.
+    if (_speedRpm > 800) {
+        _speedKph = _lastGoodSpeedKph;
+        _speedMph = _speedKph * 0.621371f;
+        return;
+    }
+    _lastGoodSpeedKph = _speedRpm * _wheelSizeInch * 0.00478778f;
+    _speedKph = _lastGoodSpeedKph;
     _speedMph = _speedKph * 0.621371f;
 }
 

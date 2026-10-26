@@ -17,6 +17,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import kotlin.math.atan
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -80,6 +81,10 @@ class MainActivity : Activity(), BleClient.Listener {
     // Dashboard
     private lateinit var slopeValue: TextView
     private lateinit var speedValue: TextView
+    private lateinit var cadenceValue: TextView
+    private lateinit var pasValue: TextView
+    /** Whether the bike itself reports an IMU, decided from telemetry. */
+    private var bikeHasImu = false
     private lateinit var gridContainer: LinearLayout
     private lateinit var curveView: PulseCurveView
     private lateinit var assistValue: TextView
@@ -139,11 +144,9 @@ class MainActivity : Activity(), BleClient.Listener {
         "current" to "AMPS",
         "battery" to "BATTERY",
         "voltage" to "VOLTS",
-        "cadence" to "CADENCE",
         "motorRpm" to "MOTOR RPM",
         "targetCurrent" to "TARGET CUR",
         "targetSpeed" to "TARGET SPD",
-        "assist" to "ASSIST",
         "mode" to "MODE",
         "status" to "STATUS",
         "lights" to "LIGHTS",
@@ -328,6 +331,8 @@ class MainActivity : Activity(), BleClient.Listener {
         val dashboard = screens[SCREEN_DASHBOARD]
         slopeValue = dashboard.findViewById(R.id.slopeValue)
         speedValue = dashboard.findViewById(R.id.speedValue)
+        cadenceValue = dashboard.findViewById(R.id.cadenceValue)
+        pasValue = dashboard.findViewById(R.id.pasValue)
         gridContainer = dashboard.findViewById(R.id.gridContainer)
         curveView = dashboard.findViewById(R.id.curveView)
         assistValue = dashboard.findViewById(R.id.assistValue)
@@ -835,15 +840,18 @@ class MainActivity : Activity(), BleClient.Listener {
         // the bike is travelling; this is the distance term.
         if (::hill.isInitialized) hill.updateBikeSpeed(t.speedKph)
 
-        if (!t.hasImu) {
-            slopeValue.text = getString(R.string.dash)
-            slopeValue.setTextColor(color(R.color.dim))
+        bikeHasImu = t.hasImu
+        if (t.hasImu) {
+            showSlopeDegrees(t.slopeDeg)
         } else {
-            slopeValue.text = signed(t.slopeDeg, 1, "\u00b0")
-            // Amber once the grade is steep enough to matter for gearing.
-            val steep = (t.slopeDeg ?: 0.0).let { it >= 8.0 || it <= -8.0 }
-            slopeValue.setTextColor(color(if (steep) R.color.warn else R.color.accent))
+            // No IMU on the bike. The phone's barometric grade is the only slope
+            // there is, and it is the reason this hero sat at "--" otherwise.
+            showPhoneGrade()
         }
+
+        cadenceValue.text = if (t.hasTargetTelemetry) number(t.cadenceRpm, 0)
+                            else getString(R.string.dash)
+        pasValue.text = t.assistLevel?.toString() ?: getString(R.string.dash)
 
         put("power", t.powerWatts?.let { "$it" })
         put("current", number(t.currentAmps, 1))
@@ -938,6 +946,8 @@ class MainActivity : Activity(), BleClient.Listener {
         // The sensor runs at ~50 Hz; the label only needs 10.
         if (now - hillUiLastMs >= 100) {
             hillUiLastMs = now
+            if (!bikeHasImu) showPhoneGrade()
+
             hillGrade.text = if (hillEnabled) {
                 String.format(Locale.US, "%s%.1f%%  L%d", if (grade >= 0) "+" else "", grade, hillLevel)
             } else {
@@ -1022,6 +1032,31 @@ class MainActivity : Activity(), BleClient.Listener {
         curveView.setCurve(
             PasCurve.parameters(config, curveSport ?: false, curveLevel ?: 0)
         )
+    }
+
+    private fun showSlopeDegrees(degrees: Double?) {
+        if (degrees == null || degrees.isNaN()) {
+            slopeValue.text = getString(R.string.dash)
+            slopeValue.setTextColor(color(R.color.dim))
+            return
+        }
+        slopeValue.text = signed(degrees, 1, "\u00b0")
+        // Amber once the grade is steep enough to matter for gearing.
+        val steep = degrees >= 8.0 || degrees <= -8.0
+        slopeValue.setTextColor(color(if (steep) R.color.warn else R.color.accent))
+    }
+
+    /**
+     * The phone measures grade as a percentage; the hero is in degrees, and one
+     * unit across both sources beats two numbers that look comparable and are not.
+     */
+    private fun showPhoneGrade() {
+        if (!::hill.isInitialized) {
+            slopeValue.text = getString(R.string.dash)
+            slopeValue.setTextColor(color(R.color.dim))
+            return
+        }
+        showSlopeDegrees(Math.toDegrees(atan(hill.gradePct / 100.0)))
     }
 
     private fun updatePhoneReadouts() {

@@ -323,7 +323,11 @@
 // km/h units (e.g. 15.2 degrees -> display shows 15.2 km/h).
 // Set to 0 to restore normal speed display.
 #ifndef MPU_PITCH_AS_SPEED_DISPLAY
-#define MPU_PITCH_AS_SPEED_DISPLAY 1
+// Debug aid: substitutes the tilt angle for the speed the display shows, by
+// back-calculating the RPM that would render it. Left on by mistake once and it
+// read as thousands of km/h whenever the estimate ran away, because the value is
+// clamped by a uint16 RPM rather than by anything physical. Off for real use.
+#define MPU_PITCH_AS_SPEED_DISPLAY 0
 #endif
 
 // -----------------------------------------------------------------------------
