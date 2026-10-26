@@ -64,6 +64,7 @@ void SerialBridge::process() {
     if (_state == BridgeState::PASS_THROUGH) {
         processDisplayRxPassThrough();
         processControllerRxPassThrough();
+        processPasOverride();
         processPeriodicInclination();
     } else {
         // In CONFIG_INTERCEPT mode: middleman intercepts display queries and replies with mock data
@@ -74,6 +75,24 @@ void SerialBridge::process() {
 // -----------------------------------------------------------------------------
 // PASS-THROUGH MODE
 // -----------------------------------------------------------------------------
+
+// Assist level 0..9 -> the display protocol's level code. Shared by the one-shot
+// injection and the auto-assist override so the two can never disagree.
+static uint8_t levelToBafangCode(uint8_t level) {
+    switch (level) {
+        case 0: return 0x00;
+        case 1: return 0x01;
+        case 2: return 0x0b;
+        case 3: return 0x0c;
+        case 4: return 0x0d;
+        case 5: return 0x02;
+        case 6: return 0x15;
+        case 7: return 0x16;
+        case 8: return 0x17;
+        case 9: return 0x03;
+        default: return 0x01;
+    }
+}
 
 void SerialBridge::processDisplayRxPassThrough() {
     while (_displaySerial.available()) {
@@ -89,11 +108,27 @@ void SerialBridge::processDisplayRxPassThrough() {
             _displayBuf[_displayBufLen++] = byteVal;
         }
 
-        // Direct pass-through to controller
-        _controllerSerial.write(byteVal);
-        Telemetry.recordControllerTx(1);
-        Telemetry.recordForward();
-        Debug.traceByte(TraceDir::ControllerTx, byteVal);
+        // Write frames are held back until complete: the auto-assist override has
+        // to change a payload byte, which is impossible once the first byte has
+        // already gone out. Reads are still forwarded byte-for-byte.
+        if (_holdWrite) {
+            if (_writeLen < sizeof(_writeBuf)) _writeBuf[_writeLen++] = byteVal;
+            if (_writeLen == 2) {
+                _writeExpectedLen = 4;
+                if (_writeBuf[1] == OPCODE_DISPLAY_WRITE_LIGHTS) _writeExpectedLen = 3;
+                else if (_writeBuf[1] == OPCODE_DISPLAY_WRITE_SPEED_LIM) _writeExpectedLen = 5;
+            }
+            if (_writeExpectedLen > 0 && _writeLen >= _writeExpectedLen) {
+                flushHeldWrite();
+            }
+        } else if (byteVal == REQUEST_TYPE_BAFANG_WRITE) {
+            _holdWrite = true;
+            _writeLen = 0;
+            _writeExpectedLen = 0;
+            _writeBuf[_writeLen++] = byteVal;
+        } else {
+            forwardDisplayByte(byteVal);
+        }
 
         // Check if we have received a complete known display packet
         if (_displayBufLen >= 2 && _displayBuf[0] == REQUEST_TYPE_BAFANG_READ) {
@@ -124,10 +159,84 @@ void SerialBridge::processDisplayRxPassThrough() {
         }
     }
 
-    // Reset buffer on framing pause (> 40ms)
-    if (_displayBufLen > 0 && (millis() - _lastDisplayByteMs > 40)) {
-        _displayBufLen = 0;
+    // Reset on a framing pause (> 40ms). A partial write frame is flushed as-is
+    // rather than stranded -- a truncated command is worse than an unmodified one.
+    if (millis() - _lastDisplayByteMs > 40) {
+        if (_holdWrite) flushHeldWrite();
+        if (_displayBufLen > 0) _displayBufLen = 0;
     }
+}
+
+void SerialBridge::forwardDisplayByte(uint8_t b) {
+    _controllerSerial.write(b);
+    Telemetry.recordControllerTx(1);
+    Telemetry.recordForward();
+    Debug.traceByte(TraceDir::ControllerTx, b);
+}
+
+void SerialBridge::flushHeldWrite() {
+    if (_writeLen == 0) {
+        _holdWrite = false;
+        return;
+    }
+
+    // The override: swap the display's PAS level for ours. The checksum is a plain
+    // sum over the preceding bytes, so it is recomputed rather than adjusted.
+    if (_pasOverrideActive && _writeLen >= 4 &&
+        _writeBuf[0] == REQUEST_TYPE_BAFANG_WRITE &&
+        _writeBuf[1] == OPCODE_DISPLAY_WRITE_PAS) {
+        const uint8_t code = levelToBafangCode(_pasOverrideLevel);
+        if (_writeBuf[2] != code) {
+            _writeBuf[2] = code;
+            _writeBuf[3] = computeChecksum(_writeBuf, 3);
+            Debug.tracef("PAS override: display level rewritten to %u",
+                         (unsigned)_pasOverrideLevel);
+        }
+    }
+
+    for (size_t i = 0; i < _writeLen; ++i) forwardDisplayByte(_writeBuf[i]);
+
+    _writeLen = 0;
+    _writeExpectedLen = 0;
+    _holdWrite = false;
+}
+
+// The override is a lease, not a setting. If the phone dies or walks away the
+// display must get control back rather than leaving the bike pinned at a level
+// whose display buttons no longer do anything.
+static constexpr uint32_t PAS_OVERRIDE_TIMEOUT_MS = 15000;
+
+void SerialBridge::setPasOverride(uint8_t level) {
+    _pasOverrideActive = true;
+    _pasOverrideLevel = level;
+    _pasOverrideLastMs = millis();
+    // Push it now rather than waiting for the display's next poll; process() sends
+    // it between frames using the same bus-idle rule as the inclination broadcast.
+    _pasOverridePending = true;
+    Telemetry.updateAssistLevel(level);
+}
+
+void SerialBridge::clearPasOverride() {
+    _pasOverrideActive = false;
+    _pasOverridePending = false;
+    _pasOverrideLastMs = 0;
+}
+
+void SerialBridge::processPasOverride() {
+    if (_pasOverrideActive &&
+        (millis() - _pasOverrideLastMs > PAS_OVERRIDE_TIMEOUT_MS)) {
+        clearPasOverride();
+        Debug.trace("PAS override: expired without a refresh");
+        Serial.println("[BRIDGE] PAS override expired - display has control again");
+        return;
+    }
+    if (!_pasOverridePending) return;
+    const uint32_t now = millis();
+    // Never inject mid-frame.
+    if ((now - _lastDisplayByteMs < 25) || (now - _lastControllerByteMs < 25)) return;
+
+    injectPasLevel(_pasOverrideLevel);
+    _pasOverridePending = false;
 }
 
 void SerialBridge::handleDisplayPacket(const uint8_t* buf, size_t len) {
@@ -152,7 +261,9 @@ void SerialBridge::handleDisplayPacket(const uint8_t* buf, size_t len) {
                     case 0x06: lvl = 6; break; // Walk mode
                     default: lvl = buf[2]; break;
                 }
-                Telemetry.updateAssistLevel(lvl);
+                // With an override active the controller ends up at our level, not
+                // the display's, so reporting the display's value would be a lie.
+                Telemetry.updateAssistLevel(_pasOverrideActive ? _pasOverrideLevel : lvl);
             }
             break;
         }
@@ -992,20 +1103,7 @@ bool SerialBridge::enableEventLog(bool enable, uint32_t timeoutMs) {
 }
 
 void SerialBridge::injectPasLevel(uint8_t level) {
-    uint8_t bafangLvl = 0x00;
-    switch (level) {
-        case 0: bafangLvl = 0x00; break;
-        case 1: bafangLvl = 0x01; break;
-        case 2: bafangLvl = 0x0b; break;
-        case 3: bafangLvl = 0x0c; break;
-        case 4: bafangLvl = 0x0d; break;
-        case 5: bafangLvl = 0x02; break;
-        case 6: bafangLvl = 0x15; break;
-        case 7: bafangLvl = 0x16; break;
-        case 8: bafangLvl = 0x17; break;
-        case 9: bafangLvl = 0x03; break;
-        default: bafangLvl = 0x01; break;
-    }
+    const uint8_t bafangLvl = levelToBafangCode(level);
 
     uint8_t pkt[4] = { REQUEST_TYPE_BAFANG_WRITE, OPCODE_DISPLAY_WRITE_PAS, bafangLvl, 0 };
     pkt[3] = computeChecksum(pkt, 3);
@@ -1013,6 +1111,7 @@ void SerialBridge::injectPasLevel(uint8_t level) {
     _controllerSerial.write(pkt, 4);
     Telemetry.updateAssistLevel(level);
 }
+
 
 void SerialBridge::injectLights(bool on) {
     uint8_t state = on ? 0xf1 : 0xf0;

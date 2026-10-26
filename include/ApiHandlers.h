@@ -35,6 +35,7 @@ enum class ApiRouteId : uint8_t {
     CmdPas,
     CmdMode,
     CmdLights,
+    AutoAssist,
     WifiConfig,
     Info,
     SerialTrace,

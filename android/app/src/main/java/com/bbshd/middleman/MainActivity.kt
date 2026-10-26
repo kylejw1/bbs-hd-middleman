@@ -17,6 +17,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -115,6 +116,18 @@ class MainActivity : Activity(), BleClient.Listener {
     private var lastModeSport = false
     private var lastLights = false
 
+    // Hill assist
+    private lateinit var hill: HillAssist
+    private lateinit var hillEnable: CheckBox
+    private lateinit var hillGrade: TextView
+    private var hillEnabled = false
+    private var hillLevel = 1
+    private var hillCandidateSince = 0L
+    private var hillLastSentLevel: Int? = null
+    private var hillLastSendMs = 0L
+    private var hillUiLastMs = 0L
+    private var hillStarted = false
+
     /** Last config read, used only to draw the PAS curve. */
     private var bikeConfig: JSONObject? = null
     private var curveSport: Boolean? = null
@@ -138,6 +151,10 @@ class MainActivity : Activity(), BleClient.Listener {
     private val ticker = object : Runnable {
         override fun run() {
             updateStatusLine()
+            // Doubles as the override heartbeat: pushHillLevel() only actually
+            // sends on a level change or every 5 s, but the firmware expires the
+            // override after 15 s, so the renewals have to keep coming.
+            if (hillEnabled) pushHillLevel()
             main.postDelayed(this, 1_000)
         }
     }
@@ -186,6 +203,12 @@ class MainActivity : Activity(), BleClient.Listener {
     override fun onResume() {
         super.onResume()
         main.postDelayed(ticker, 1_000)
+        if (hillEnabled) {
+            hill.start()
+            hillStarted = true
+            // Take the override back if we gave it up on pause.
+            pushHillLevel(force = true)
+        }
     }
 
     override fun onPause() {
@@ -196,6 +219,16 @@ class MainActivity : Activity(), BleClient.Listener {
         // has no foreground service, and dropping to "Disconnected" every time
         // the rider glances at a notification would make it useless.
         main.removeCallbacks(ticker)
+        if (hillStarted) {
+            hill.stop()
+            hillStarted = false
+        }
+        // Hand control back rather than leaving the bike overridden while the app
+        // is in the background. It would expire on its own, but not immediately.
+        if (hillEnabled && ble.isReady()) {
+            ble.post("/api/cmd/auto-assist", "{\"enabled\":false}")
+            hillLastSentLevel = null
+        }
     }
 
     override fun onDestroy() {
@@ -296,6 +329,17 @@ class MainActivity : Activity(), BleClient.Listener {
         dashboard.findViewById<Button>(R.id.assistDown).setOnClickListener { nudgeAssist(-1) }
         modeButton.setOnClickListener { toggleMode() }
         lightsButton.setOnClickListener { toggleLights() }
+
+        hillEnable = dashboard.findViewById(R.id.hillEnable)
+        hillGrade = dashboard.findViewById(R.id.hillGrade)
+        dashboard.findViewById<Button>(R.id.hillZero).setOnClickListener { zeroHill() }
+
+        hill = HillAssist(this) { grade -> onGrade(grade) }
+        if (!hill.available) {
+            hillEnable.isEnabled = false
+            hillEnable.text = "HILL ASSIST (no sensor)"
+        }
+        hillEnable.setOnCheckedChangeListener { _, checked -> setHillEnabled(checked) }
 
         eventsList = screens[SCREEN_EVENTS].findViewById(R.id.eventsList)
         renderEvents()
@@ -626,6 +670,7 @@ class MainActivity : Activity(), BleClient.Listener {
             // The curve needs the level parameters, which only /api/config carries.
             // One read per connection; it costs about a second of bridge time.
             fetchCurveConfig()
+            if (hillEnabled) pushHillLevel(force = true)
         }
         if (state == BleClient.State.FAILED) {
             toast(detail)
@@ -826,6 +871,104 @@ class MainActivity : Activity(), BleClient.Listener {
      * first attempt (503), exactly as the Config tab sees. Without a retry the
      * curve silently never appears.
      */
+    // --- hill assist ----------------------------------------------------------
+
+    private fun setHillEnabled(on: Boolean) {
+        hillEnabled = on
+        if (on) {
+            hill.start()
+            hillStarted = true
+            hillLevel = HillAssist.levelFor(0.0)
+            hillCandidateSince = 0L
+            pushHillLevel(force = true)
+        } else {
+            hill.stop()
+            hillStarted = false
+            hillCandidateSince = 0L
+            hillGrade.text = getString(R.string.dash)
+            if (ble.isReady()) {
+                ble.post("/api/cmd/auto-assist", "{\"enabled\":false}")
+            }
+            hillLastSentLevel = null
+        }
+    }
+
+    private fun zeroHill() {
+        if (!hillEnabled) {
+            toast("Enable hill assist first")
+            return
+        }
+        hill.zero()
+        val zero = hill.zeroDegrees
+        // A near-vertical zero means the phone is mounted screen-outward, where
+        // this measurement collapses. Say so instead of showing a dead reading.
+        toast(
+            if (Math.abs(zero) > 45.0) {
+                String.format(Locale.US, "Zeroed at %+.0f deg - mount the phone flat", zero)
+            } else {
+                "Level ground captured"
+            }
+        )
+    }
+
+    private fun onGrade(grade: Double) {
+        val now = SystemClock.elapsedRealtime()
+
+        // The sensor runs at ~50 Hz; the label only needs 10.
+        if (now - hillUiLastMs >= 100) {
+            hillUiLastMs = now
+            hillGrade.text = String.format(
+                Locale.US, "%s%.1f%%  L%d", if (grade >= 0) "+" else "", grade, hillLevel
+            )
+        }
+
+        val raw = HillAssist.levelFor(grade)
+        if (raw == hillLevel) {
+            hillCandidateSince = 0L
+            return
+        }
+
+        // Hysteresis, or the level chatters at every band boundary. Going up we
+        // want to be a little way into the new band; going down, a little way
+        // below the old one.
+        val margin = 0.25
+        val inside = if (raw > hillLevel) {
+            grade >= (raw - 1) + margin
+        } else {
+            grade <= raw - margin
+        }
+        if (!inside) {
+            hillCandidateSince = 0L
+            return
+        }
+
+        // And a dwell, so a bump or a pothole cannot change gear.
+        if (hillCandidateSince == 0L) {
+            hillCandidateSince = now
+            return
+        }
+        if (now - hillCandidateSince < 1_200) return
+
+        hillLevel = raw
+        hillCandidateSince = 0L
+        pushHillLevel()
+    }
+
+    private fun pushHillLevel(force: Boolean = false) {
+        if (!hillEnabled || !ble.isReady()) return
+
+        val now = SystemClock.elapsedRealtime()
+        if (!force && hillLastSentLevel == hillLevel && now - hillLastSendMs < 5_000) return
+
+        hillLastSentLevel = hillLevel
+        hillLastSendMs = now
+        ble.post("/api/cmd/auto-assist", "{\"enabled\":true,\"level\":$hillLevel}") { status, _ ->
+            if (status != 200) {
+                toast("Hill assist rejected (${if (status < 0) "no reply" else "$status"})")
+            }
+        }
+    }
+
     private fun fetchCurveConfig(attempt: Int = 1) {
         ble.get("/api/config") config@{ status, body ->
             if (status == 503 && attempt < 3) {

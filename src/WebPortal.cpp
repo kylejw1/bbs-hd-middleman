@@ -354,6 +354,7 @@ bool WebPortal::dispatchApi(const ApiRequest& req, ApiResponse& out) {
         case ApiRouteId::CmdPas:           handleCmdPas();           break;
         case ApiRouteId::CmdMode:          handleCmdMode();          break;
         case ApiRouteId::CmdLights:        handleCmdLights();        break;
+        case ApiRouteId::AutoAssist:       handleAutoAssist();       break;
         case ApiRouteId::WifiConfig:       handleWifiConfig();       break;
         case ApiRouteId::Info:             handleInfo();             break;
         case ApiRouteId::SerialTrace:      handleSerialTrace();      break;
@@ -598,6 +599,32 @@ void WebPortal::handleCmdLights() {
 
     Bridge.injectLights(on);
     sendApi(200, "application/json", "{\"success\":true}");
+}
+
+void WebPortal::handleAutoAssist() {
+    if (!_apiBody) {
+        sendApi(400, "application/json", "{\"error\":\"Missing body\"}");
+        return;
+    }
+
+    JsonDocument doc;
+    deserializeJson(doc, *_apiBody);
+
+    const bool enabled = doc["enabled"] | false;
+    if (enabled) {
+        // 0..9 is the Bafang assist range; anything else is a client bug.
+        int level = doc["level"] | 1;
+        if (level < 0) level = 0;
+        if (level > 9) level = 9;
+        Bridge.setPasOverride((uint8_t)level);
+        char buf[96];
+        snprintf(buf, sizeof(buf),
+                 "{\"success\":true,\"enabled\":true,\"level\":%d}", level);
+        sendApi(200, "application/json", buf);
+    } else {
+        Bridge.clearPasOverride();
+        sendApi(200, "application/json", "{\"success\":true,\"enabled\":false}");
+    }
 }
 
 void WebPortal::handleWifiConfig() {

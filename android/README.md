@@ -248,31 +248,67 @@ supply chain empty. Resist adding Compose for a screen this size.
 
 ---
 
-## Known limitation: assist level cannot be set from the app
+## Assist level: why one-shot injection fails, and the override that works
 
-The **assist +/- buttons do not stick**, and this is not an app defect. It is how the
-Bafang display behaves.
-
-Captured from the Serial Trace tab immediately after `POST /api/cmd/pas {"level":5}`:
+`POST /api/cmd/pas` writes one PAS frame to the controller. It does **not** stick.
+The display re-asserts its own level on every poll cycle, ~1 s apart:
 
 ```
 16 0b 00 21     <- the display re-asserting its own level (0x00 = level 0)
 ```
 
-The display transmits its own PAS level **every poll cycle, unconditionally**. The
-sequence is therefore:
+So an injected level reads back correctly for about a second and then reverts. This
+is why the assist +/- buttons on the Dashboard are decorative against a connected
+display: the display is the authority.
 
-1. The app injects `16 0b <5> <chk>` to the controller; `assistLevel` reads 5.
-2. Within about a second the display sends `16 0b 00 21`, which the middleman forwards.
-3. The controller obeys the display (last write wins) and telemetry parses back to 0.
+**The fix is a firmware-side override**, and it is what hill assist uses.
+`POST /api/cmd/auto-assist {"enabled":true,"level":N}` puts the middleman in charge:
+while the override is active it holds each display write frame until it is complete,
+substitutes its own PAS level, recomputes the 8-bit sum checksum, and forwards the
+modified frame. The display never sees the difference; the controller only ever sees
+our level, so there is no oscillation.
 
-Verified by polling `/api/telemetry` every 600 ms: `assist=5, 5, 0, 0, 0…` with the ESP
-uptime climbing steadily, so nothing is rebooting — the display is simply the authority.
+Two consequences worth knowing:
 
-**Mode and lights do work**, because the display does not re-assert those.
+* **The display's PAS buttons stop working while the override is active.** The
+  middleman rewrites whatever the display sends, including a rider's button press.
+  The display will also show a level that may not match what the controller is doing.
+  Turn hill assist off to get the buttons back.
+* **The override is a 15 second lease, not a setting.** The app renews it every 5 s.
+  If the phone dies, is backgrounded, or walks out of range, the middleman expires the
+  override and the display gets control back. Without that the bike would be stuck at
+  the last commanded level with dead buttons.
 
-Fixing assist would mean intercepting the display's own `16 0b` frame and rewriting its
-payload before it reaches the controller (a change in `SerialBridge`'s display forwarding
-path, which currently forwards byte-by-byte before parsing). Re-injecting after the
-display is *not* acceptable: it would make the level oscillate 0→5→0 while riding.
+## Hill assist (phone sensors)
+
+A checkbox on the Dashboard. When on, the phone's own orientation sensor measures the
+road grade and the app commands an assist level from it:
+
+| Grade | Level |
+| --- | --- |
+| below 1 % (including downhill) | 1 |
+| 1–2 % | 2 |
+| 3 % | 4 |
+| 8 % and above | 9 (clamped) |
+
+`level = 1 + floor(grade%)`, clamped to 1..9.
+
+**Mount the phone flat on the bars, screen up, top of the phone pointing forward.**
+The measurement is the tilt of the device's +Y axis out of horizontal, so a
+screen-outward mount puts that axis ~90 degrees out and the signal collapses. The
+Zero button warns if it captured a near-vertical zero.
+
+Press **Zero** while stopped on ground you know is level; the offset is relative to
+that, exactly like the bike's own power-on zero. Grade is smoothed hard (alpha 0.12
+on a ~50 Hz feed) because a level that twitches commands a motor that twitches, and
+level changes need both 0.25 % of hysteresis and a 1.2 s dwell so a pothole cannot
+change gear.
+
+## Known limitation: one-shot PAS injection
+
+The Dashboard's assist +/- controls still use the one-shot `POST /api/cmd/pas`, so
+against a connected display they revert within about a second. They are useful
+against a controller with no display attached. Making them work everywhere means
+routing them through the override while hill assist is off, which needs a decision
+about what the display should then show.
 

@@ -38,6 +38,15 @@ public:
 
     // Direct command injections (can be triggered from Web UI)
     void injectPasLevel(uint8_t level);
+
+    // Auto-assist override. The display re-asserts its own PAS level on every
+    // poll cycle, so a one-shot injection loses within about a second. While an
+    // override is active the middleman rewrites the display's PAS write to this
+    // level before forwarding it, which makes the middleman the authority.
+    void setPasOverride(uint8_t level);
+    void clearPasOverride();
+    bool hasPasOverride() const { return _pasOverrideActive; }
+    uint8_t getPasOverrideLevel() const { return _pasOverrideLevel; }
     void injectLights(bool on);
     void injectOperationMode(uint8_t mode);
 
@@ -71,6 +80,15 @@ private:
     size_t  _displayBufLen;
     uint32_t _lastDisplayByteMs;
 
+    bool     _pasOverrideActive = false;
+    uint8_t  _pasOverrideLevel = 0;
+    bool     _pasOverridePending = false;
+    uint32_t _pasOverrideLastMs = 0;
+    uint8_t  _writeBuf[5] = {0};
+    size_t   _writeLen = 0;
+    size_t   _writeExpectedLen = 0;
+    bool     _holdWrite = false;
+
     // Controller RX parsing buffer
     uint8_t _controllerBuf[256];
     size_t  _controllerBufLen;
@@ -102,6 +120,11 @@ private:
 
     // Protocol helper handlers
     void handleDisplayPacket(const uint8_t* buf, size_t len);
+
+    // Write frames are held until complete so their payload can be rewritten.
+    void forwardDisplayByte(uint8_t b);
+    void flushHeldWrite();
+    void processPasOverride();
     void handleControllerPacket(const uint8_t* buf, size_t len);
     void synthesizeDisplayResponse(uint8_t opcode);
 

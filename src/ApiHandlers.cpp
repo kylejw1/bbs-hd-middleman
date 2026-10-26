@@ -16,6 +16,7 @@ const ApiRoute API_ROUTES[] = {
     { ApiRouteId::CmdPas,           "/api/cmd/pas",      true  },
     { ApiRouteId::CmdMode,          "/api/cmd/mode",     true  },
     { ApiRouteId::CmdLights,        "/api/cmd/lights",   true  },
+    { ApiRouteId::AutoAssist,       "/api/cmd/auto-assist", true },
     { ApiRouteId::WifiConfig,       "/api/wifi",         true  },
     { ApiRouteId::Info,             "/api/info",         false },
     { ApiRouteId::SerialTrace,      "/api/serial-trace", false },
