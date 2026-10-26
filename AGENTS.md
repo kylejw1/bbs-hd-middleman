@@ -78,7 +78,7 @@ $$\text{Checksum} = \left( \sum_{i=0}^{N-1} \text{byte}_i \right) \pmod{256}$$
 | Operation | Request Frame | Response Frame |
 | :--- | :--- | :--- |
 | **Read FW Version** | `0x01, 0x01, 0x02` | `0x01, 0x01, <maj>, <min>, <pat>, <cfgVer>, <ctrlType>, <chk>` (8 bytes) |
-| **Read Config** | `0x01, 0x03, 0x04` | `0x01, 0x03, <version=5>, <len=154>, [154 config bytes], <chk>` (159 bytes) |
+| **Read Config** | `0x01, 0x03, 0x04` | `0x01, 0x03, <version>, <len>, [len config bytes], <chk>` — `<len>` is 154 (v5) or 174 (v6) |
 | **Write Config** | `0x02, 0xf1, 0x05, 0x9a, [154 config bytes], <chk>` | `0x02, 0xf1, <status: 1=OK, 0=Fail>, <chk>` (4 bytes) |
 | **Reset Config** | `0x02, 0xf2, 0xf4` | `0x02, 0xf2, <status>, <chk>` (4 bytes) |
 | **Calibrate Voltage** | `0x02, 0xf3, <v_hi>, <v_lo>, <chk>` | `0x02, 0xf3, <v_hi>, <v_lo>, <chk>` (5 bytes) |
@@ -108,37 +108,20 @@ When an MPU-6050 is fitted, the middleman periodically (every `MPU_PITCH_BROADCA
 | Write Lights | `0x1a` | 3 | `0x16, 0x1a, <0xf0=Off, 0xf1=On>` |
 
 ### Debug Telemetry Frame (`0xEC`, bbs-fw fork)
-The fork's `app_process()` periodically (every `DEBUG_TELEMETRY_INTERVAL_MS`, 500 ms) calls `eventlog_write_telemetry()` so the middleman can display live motor targets that the display protocol never exposes:
+The fork emits a debug frame so the middleman can show live motor targets the display protocol never exposes:
 
 ```
 0xEC, target_current_percent, target_speed_percent,
      cadence_rpm_x10_hi, cadence_rpm_x10_lo,
-     motor_rpm_x10_hi, motor_rpm_x10_lo,
-     rider_torque_dnm_hi, rider_torque_dnm_lo,
-     load_bias_dnm_hi, load_bias_dnm_lo,
-     load_flags, checksum
+     motor_rpm_x10_hi, motor_rpm_x10_lo, checksum
 ```
-Thirteen bytes including the checksum. It grew from eight when the virtual load
-sensing estimator was added; at the 500 ms emit interval it occupies about 11% of
-the 1200 baud controller<->display link.
 
-* `rider_torque_dnm` is the estimated torque the rider is actually transmitting
-  through the crank clutch, in Nm x10, signed. This is the virtual torque sensor
-  output; see `bbs-fw/src/firmware/loadsensor.h` for the full derivation.
-* `load_bias_dnm` is the identified grade/rolling load bias the estimate is
-  derived against, Nm x10, signed. Useful for checking the model against a known
-  road.
-* `load_flags` carries `LOAD_FLAG_*` (see `BbsFwProtocol.h`) plus a 2 bit
-  confidence field in bits 5-6. Confidence 0 means no coast has been observed
-  since power-on, so the load reference is still a nominal prior and the reading
-  must not be trusted on a climb.
+**Eight bytes including the checksum** (`EVENT_LOG_TELEMETRY_SIZE`). Parsed in both `processControllerRxPassThrough()` and `consumeControllerEventFrame()`, applied through `updateTargetTelemetry()`, and **swallowed** like the other event frames so the display never sees it.
 
-* `target_current_percent` / `target_speed_percent` are the final `motor_set_target_current()` / `motor_set_target_speed()` values (0–100).
-* `cadence_rpm_x10` is `pas_get_cadence_rpm_x10()` (pedal cadence × 10).
-* `motor_rpm_x10` is `hall_get_motor_rpm_x10()`: the motor output shaft speed × 10, measured from the three motor hall signals, which are wired to both the NEC motor controller and the STC. It is reported in output shaft (chainring / crank equivalent) rpm so it is directly comparable to the pedal cadence, and reads zero when the motor is not turning or on controllers whose hall routing has not been traced.
-* Checksum is the usual 8-bit sum over the first seven bytes.
-* It is only emitted while the event log is enabled (the middleman enables it at boot via `enableEventLog(true)`).
-* The middleman parses it in both bridge paths — `processControllerRxPassThrough()` and `consumeControllerEventFrame()` — updates `TelemetryTracker::updateTargetTelemetry()`, and **swallows** it like the other event frames (never forwarded to the display). `/api/telemetry` exposes `hasTargetTelemetry`, `targetCurrentPercent`, `targetSpeedPercent`, `cadenceRpm`, `motorRpm`, `riderTorqueNm`, `loadBiasNm`, `loadValid`, `loadConfidence`, `loadClutchLocked`, `loadAnchored` and `loadSaturated`, which the dashboard "Motor Targets (bbs-fw)" card renders.
+* `cadence_rpm_x10` is `pas_get_cadence_rpm_x10()`. `motor_rpm_x10` is `hall_get_motor_rpm_x10()`, reported in output-shaft rpm so it is directly comparable to pedal cadence; it reads zero when the motor is not turning.
+* Emitted only while the event log is enabled, which the middleman does at boot via `enableEventLog(true)`.
+* **There are no torque or load fields.** Earlier revisions of this document described a 13-byte frame carrying `rider_torque_dnm`, `load_bias_dnm` and `load_flags`, and listed `riderTorqueNm`/`loadBiasNm`/`loadValid`/`loadConfidence`/`loadSaturated` in `/api/telemetry`. None of that exists in this tree — grepping those names finds only this paragraph. Do not build UI or firmware against them.
+* `/api/telemetry` exposes `hasTargetTelemetry`, `targetCurrentPercent`, `targetSpeedPercent`, `cadenceRpm` and `motorRpm`. `hasTargetTelemetry` goes false once the last frame is older than 4 s, so stale targets never render as live.
 
 ### Binary Configuration Struct Layout (Version 5, 154 Bytes)
 Defined in [`include/BbsFwProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/include/BbsFwProtocol.h):
@@ -147,20 +130,19 @@ Defined in [`include/BbsFwProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/in
 * `sport_levels[10]`: $10 \times 6 = 60$ bytes.
 * Total size: $34 + 60 + 60 = 154$ bytes (`#pragma pack(push, 1)`).
 
-**Current firmware target: version 5.** The bbs-fw tree in use is based on commit `10cadba` (config version 5), so v5 is the layout that will actually be seen on the wire. The v6 support below is retained and version-gated but currently unused; no build-time switch is needed because the layout is chosen from the version the controller reports.
+**The field unit reports version 6.** `/api/config` returns `configVersion: 6` (firmware 1.5.99); the v5 layout is kept because older controllers exist, and the layout follows the reported version, so there is no build-time switch. Verified on the live device: the v6 JSON round-trips losslessly through `GET` -> edit -> `POST`.
 
-### Binary Configuration Struct Layout (Version 6, 192 Bytes)
-Config v6 (bbs-fw fork commit "per-assist-level PAS min current and cadence taper, display target current") is **not** a superset of v5:
-* Header fields: 32 bytes — the global `pas_keep_current_percent` / `pas_keep_current_cadence_rpm` are removed.
-* `standard_levels[10]` / `sport_levels[10]`: $2 \times 10 \times 8 = 160$ bytes (`AssistLevelV6`: flags, max_current%, min_current%, taper_start_cadence_rpm, taper_end_cadence_rpm, max_throttle%, max_speed%, torque_amp).
-* New flag `ASSIST_FLAG_DISPLAY_TARGET_CURRENT = 0x80` (show target current on the display instead of speed).
+### Binary Configuration Struct Layout (Version 6, 174 Bytes)
+Config v6 differs from v5 only in the level type. `BBS_FW_CONFIG_V6_SIZE` is **174** and `AssistLevelV6` is **7 bytes**, both enforced by `static_assert` in [`src/BbsFwProtocol.cpp`](file:///home/kyle/dev/bbs-hd-middleman/src/BbsFwProtocol.cpp):
+* Header fields: **34 bytes, byte-for-byte identical to v5** — `pas_keep_current_percent` / `pas_keep_current_cadence_rpm` are still present and still serialised. (Earlier revisions of this document claimed a 32-byte header with those fields removed; that was wrong.)
+* `standard_levels[10]` / `sport_levels[10]`: $2 \times 10 \times 7 = 140$ bytes — `flags, target_current%, max_throttle%, max_cadence%, max_speed%, torque_amp_x10, target_rpm_offset`. There is **no** `min_current` or cadence-taper pair in this struct; do not add them to the JSON without changing the struct and the size assert.
+* Total size: $34 + 140 = 174$ bytes. The JSON carries every field, so the round-trip is lossless and a v6 controller is safe to edit from any client.
 * `assist_mode_select` gains values 3–12 (`PASn + Lights toggles mode`) and 13 (`Brake switch toggles mode on boot`); v5 only knows 0–2.
-* Total size: $32 + 160 = 192$ bytes.
 
 **Version-aware tooling (critical):** the firmware only accepts a write whose `version`/`length` match its own `CONFIG_VERSION`, so the tool detects the controller version and switches layout:
-* `SerialBridge::readConfig`/`writeConfig` take a version-tagged `BbsFwConfig` (`version`, `v5`, `v6` views) and frame v4 (152), v5 (154) or v6 (192) accordingly.
+* `SerialBridge::readConfig`/`writeConfig` take a version-tagged `BbsFwConfig` (`version`, `v5`, `v6` views) and frame v4 (152), v5 (154) or v6 (174) accordingly.
 * `_configVersion` is learned from the FW-version response and the read-config header; `getConfigVersion()` is authoritative.
-* `serializeConfigToJson`/`deserializeConfigFromJson` emit/consume the field set for `cfg.version` (`current`/`cadence` + global keep-current for v4/v5; `maxCurrent`/`minCurrent`/`taperStartCadence`/`taperEndCadence`/`displayTargetCurrent` for v6).
+* `serializeConfigToJson`/`deserializeConfigFromJson` emit/consume the field set for `cfg.version` (v4/v5 levels carry `current`/`maxThrottle`/`cadence`/`speed`/`torqueAmp`; v6 levels carry the same plus `targetRpmOffset`). Both versions still emit `pasKeepCurrentPercent`/`pasKeepCurrentCadenceRpm`.
 * `handlePostConfig` returns HTTP 409 if the posted `configVersion` differs from the controller's, so importing a v6 profile while attached to a v5 controller cannot zero the EEPROM.
 * The web UI rebuilds its assist-level table columns from `configVersion` (`buildLevelTables(version)`), hides the global keep-current fields for v6, and extends the assist-mode options for v6.
 
@@ -263,6 +245,27 @@ Every dashboard call goes through `apiFetch()` in `web/index.html`, which is the
 
 ---
 
+### Android Companion App (`android/`)
+A native Kotlin app for a phone on the handlebars: one screen of live values over BLE, screen kept awake, automatic reconnect. It is a **separate Gradle build** in `android/`, independent of PlatformIO: `pio run` does not build it and nothing in `include/` or `src/` knows it exists. It only talks to the running firmware over the air.
+
+* **It exists because Web Bluetooth cannot cover this ground.** `web/index.html` already does BLE, but only in Chrome — Web Bluetooth does not exist in an Android WebView, and the hosted copy needs HTTPS to be a secure context at all. A native app has neither limit: offline forever, screen kept awake, survives a browser data clear.
+* **The wire format now has THREE implementations and they must agree.** `include/BleProtocol.h` is the specification; `web/index.html` and `android/app/src/main/java/com/bbshd/middleman/BleClient.kt` are the clients. Changing a UUID, a header field or the push-kind numbering means changing all three, or discovery silently stops working. The rule that already covered the two copies now covers three.
+* **The app is a full client now, with one deliberate gap.** It has five tabs — DASHBOARD, EVENTS, DEVICE, CONFIG, DEBUG — and edits the controller's config over BLE by round-tripping the JSON from `/api/config` rather than re-deriving the packed 154/174-byte struct in Kotlin. Firmware upload remains web-only: a ~1.5 MB image has no place in BLE request framing.
+* **Config writes are guarded three ways, all of them learned from a real incident.** The first hardware write silently flipped assist level 3's `flags` from 3 to 0 because level fields were seeded from the root JSON object instead of the level's own entry. Now: (a) `write()` refuses unless a config was actually read, because `deserializeConfigFromJson` zeroes the struct before applying keys and `{}` would erase the EEPROM; (b) the confirmation lists exactly which fields differ from what was read, which is the check that would have caught the incident; (c) `flags` is removed on collect so the firmware rebuilds it from the checkboxes — `deserializeLevelFlags()` lets an explicit `flags` byte override the booleans, so keeping it made every toggle a silent no-op. Comparisons are normalised (`0` vs `false`, `26` vs `26.0`, float widening) or an untouched config reported five phantom changes.
+* **The debug console fetches on demand, never on a timer.** A full trace ring is 512 entries / ~20 KB of JSON; pushing that repeatedly over BLE starved telemetry and started failing writes outright. It probes with `?after=4294967280` for the newest seq, then pulls a ~96-entry window.
+* **No third-party dependencies at all.** `org.json` is in the framework and the UI is plain framework views (`Activity`, `LinearLayout`, `TextView`). The APK stays tiny, the build stays fast and the supply chain stays empty. Do not add Compose for a screen this size; do not add a BLE library.
+* **Threading: every GATT operation and every connection field is main-thread only.** Callbacks arrive on a Bluedroid binder thread and are re-posted to the main looper immediately, so there is no lock on the write queue or the inflight map. The scan callback is posted the same way — `ScanCallback` runs on a binder thread and `connect()` touches main-thread state. Reaching that state from a callback would reintroduce the race the design exists to prevent.
+* **Frames are byte streams in both directions.** The writer cuts a frame into `MTU - 3` slices and waits for each ack before the next (`WRITE_TYPE_DEFAULT`); the reader reassembles until it has `totalLen`. Replies and pushes share the response characteristic and are separated by sequence range (requests `1..0x7FFF`, pushes `0x8000..0xFFFF`). Push reassembly is a single buffer keyed on `seq`, mirroring the browser: each push has a fresh seq, so a partly-lost message is abandoned when the next starts rather than corrupting a shared buffer.
+* **Service discovery must not depend on `onMtuChanged`.** Some stacks never deliver it even when `requestMtu()` returned true, so a 1.5 s fallback calls `discoverServices()` regardless. Discovery is guarded by a flag so a late callback cannot run it twice.
+* **Subscribing to notifications needs TWO calls, and the second one needs a value.** `setCharacteristicNotification(char, true)` only tells the local stack; the peripheral does not send anything until the client writes the CCCD (`00002902-…`) with `ENABLE_NOTIFICATION_VALUE`. `BluetoothGatt.writeDescriptor()` returns `false` outright when the descriptor's value is still null — which compiles perfectly and fails only on a real device, surfacing as *"Could not write the notification descriptor"*. The firmware side is `PROPERTY_NOTIFY` plus an explicit `BLE2902` in `BlePortal::begin()`; the comment there says it "lets the client enable notifications", which is exactly what this is. Set `cccd.value` before writing it.
+* **The PIN gate is the same one the web client uses.** The device answers exactly one request before authentication: `POST /api/auth`. A device with no PIN configured accepts `{}` and returns `pinRequired:false`, so the handshake is a no-op by default. A rejected PIN is deliberately **not** retried, because the firmware counts failures and locks the transport for 30 s after five.
+* **Stale data is shown as absent, not as a stale number.** Cadence / motor rpm / targets depend on the `0xEC` debug frame and render `--` when `hasTargetTelemetry` is false; the slope renders `--` when `hasImu` is false rather than a fabricated `+0.0°`. The status line also names the failure — `Connected — no data for Ns` — because a frozen dashboard is precisely the failure mode this project has hit twice on the LCD.
+* **`configChanges` on `MainActivity` is load-bearing.** The connection lives in the activity, so letting Android recreate it on rotation would drop the link — and a phone on the bars gets rotated. There is no foreground service, so backgrounding for a long time may cost the connection; reopening reconnects to the remembered MAC.
+* **Distribution is sideload-only by design.** No Play Store, account or review. **Android refuses an in-place update whose signing key changed**, so a rebuild elsewhere needs `adb uninstall com.bbshd.middleman` first. Do not commit a keystore — this repo is public.
+* **`user.home`, not `$HOME`, is what bites.** `sdkmanager` and AGP's debug-keystore lookup both resolve through Java's `user.home`; the two scripts redirect it. Details and symptoms in [`android/README.md`](file:///home/kyle/dev/bbs-hd-middleman/android/README.md).
+
+---
+
 ## 4. Codebase Navigation
 
 ```
@@ -271,6 +274,12 @@ Every dashboard call goes through `apiFetch()` in `web/index.html`, which is the
 ├── README.md              # Human-facing guide (BOM, wiring diagrams, user manual)
 ├── AGENTS.md              # This file (Agent handoff reference & technical specs)
 ├── bike_pitch_algorithm.md # Spec for the pitch estimator in Mpu6050.cpp
+├── android/               # Separate Gradle sub-project: native Android companion app
+│   ├── app/src/main/java/com/bbshd/middleman/
+│   │   ├── MainActivity.kt # Riding dashboard (plain framework views, no Compose)
+│   │   ├── BleClient.kt   # GATT scan/connect/framing/auth -- third copy of BleProtocol
+│   │   └── Telemetry.kt   # /api/telemetry + /api/events parsing
+│   └── tools/             # setup-toolchain.sh (JDK+SDK+Gradle), build.sh
 ├── .github/workflows/
 │   └── pages.yml          # Publishes web/ to GitHub Pages (the HTTPS/BLE copy)
 ├── tools/
@@ -445,3 +454,5 @@ Firmware upload works **only over the on-device HTTP page**, and that is deliber
    GATT callbacks run on the Bluedroid task. They may only append bytes to `BlePortal`'s ring and flip `_connected`; `BlePortal::process()` in `loop()` does the dispatch. Calling `WebPortal::dispatchApi()` (or touching the bridge) from a callback would race the main task and stall the BT stack.
 6. **Always Verify Compilation Before Finishing**:
    Always run `/home/kyle/.platformio/penv/bin/pio run` to verify that code builds cleanly with zero errors and zero warnings.
+7. **Changing the BLE Wire Format Means Three Edits, Not One**:
+   [`include/BleProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/include/BleProtocol.h) is the spec, and it is implemented three times: in [`src/BlePortal.cpp`](file:///home/kyle/dev/bbs-hd-middleman/src/BlePortal.cpp), in [`web/index.html`](file:///home/kyle/dev/bbs-hd-middleman/web/index.html), and in [`android/app/src/main/java/com/bbshd/middleman/BleClient.kt`](file:///home/kyle/dev/bbs-hd-middleman/android/app/src/main/java/com/bbshd/middleman/BleClient.kt). A UUID, header or push-kind change that misses one client fails silently at runtime — the browser says **BT: Unsupported** or the device never appears, with nothing in the serial log to say why. The Android app is not built by `pio run`, so it will not break the firmware build when it drifts.

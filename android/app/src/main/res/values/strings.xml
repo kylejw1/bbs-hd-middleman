@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Middleman</string>
+    <string name="connect">Connect</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="status_idle">Not connected</string>
+    <string name="dash">--</string>
+    <string name="minus">-</string>
+    <string name="plus">+</string>
+    <string name="label_slope">SLOPE</string>
+    <string name="label_kmh">KM/H</string>
+    <string name="label_events">EVENTS</string>
+    <string name="no_events">No events yet</string>
+    <string name="tab_dashboard">DASHBOARD</string>
+    <string name="tab_events">EVENTS</string>
+    <string name="tab_settings">DEVICE</string>
+    <string name="tab_config">CONFIG</string>
+    <string name="tab_debug">DEBUG</string>
+</resources>

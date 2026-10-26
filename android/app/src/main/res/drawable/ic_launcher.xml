@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    A vector launcher icon rather than five PNG densities: it is one file, scales
+    exactly, and keeps the repo free of binary blobs. The glyph is the same idea
+    as the LCD: a cadence/power curve with the rider's position marked on it.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#0B1220"
+        android:pathData="M54,0 A54,54 0 1,0 54,108 A54,54 0 1,0 54,0 Z" />
+
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M20,76 C36,76 42,42 54,42 C66,42 72,28 88,28"
+        android:strokeColor="#35D6C4"
+        android:strokeLineCap="round"
+        android:strokeWidth="6" />
+
+    <path
+        android:fillColor="#FF4FD8"
+        android:pathData="M64,42 A5,5 0 1,0 64,52 A5,5 0 1,0 64,42 Z" />
+
+</vector>

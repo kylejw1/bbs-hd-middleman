@@ -210,6 +210,22 @@ Notes and limits:
 * The page checks the device's Bluetooth protocol version before connecting, so a newer hosted page will refuse to talk to firmware it does not understand rather than misbehave.
 * The hosted page is a convenience: everything it can do, the on-device page can also do.
 
+### 5. Android Companion App (sideload, no Play Store)
+
+There is a native Android app in [`android/`](android/) for a phone mounted on the bars: one screen of big live numbers over Bluetooth LE, the screen kept awake, and an automatic reconnect to the remembered bike.
+
+It is **not** distributed through the Play Store and does not need to be. Sideload it:
+
+1. Get `middleman-debug.apk` onto the phone (USB, Drive, email to yourself).
+2. Tap it in Files. The first time, allow installs from that source when prompted.
+3. Install. Play Protect may warn that the developer is unverified — choose *Install anyway*.
+
+Or over USB: `adb install -r android/dist/middleman-debug.apk`.
+
+No account, no fee, no review queue — the store only matters when you are distributing to strangers. The one catch is updates: Android refuses to update an installed app whose signing key changed, so if you rebuild the APK yourself, uninstall the old copy first (`adb uninstall com.bbshd.middleman`).
+
+The app is a **viewer**. It shows speed, slope, power, current, battery, voltage, cadence, motor rpm, the live targets, assist, mode and the event log. Configuration editing and firmware upload stay on the web dashboard. See [`android/README.md`](android/README.md) to build it.
+
 ---
 
 ## Troubleshooting & FAQ
