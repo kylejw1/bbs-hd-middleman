@@ -36,6 +36,7 @@ import java.util.Locale
 class MainActivity : Activity(), BleClient.Listener {
 
     companion object {
+        private const val REQ_LOCATION = 1001
         private const val TAG = "MainActivity"
         private const val PREFS = "bbshd"
         private const val KEY_PIN = "ble_pin"
@@ -117,7 +118,7 @@ class MainActivity : Activity(), BleClient.Listener {
     private var lastLights = false
 
     // Hill assist
-    private lateinit var hill: HillAssist
+    private lateinit var hill: BaroGrade
     private lateinit var hillEnable: CheckBox
     private lateinit var hillGrade: TextView
     private var hillEnabled = false
@@ -332,12 +333,13 @@ class MainActivity : Activity(), BleClient.Listener {
 
         hillEnable = dashboard.findViewById(R.id.hillEnable)
         hillGrade = dashboard.findViewById(R.id.hillGrade)
-        dashboard.findViewById<Button>(R.id.hillZero).setOnClickListener { zeroHill() }
 
-        hill = HillAssist(this) { grade -> onGrade(grade) }
+        hill = BaroGrade(this) { grade -> onGrade(grade) }
         if (!hill.available) {
+            // No barometer, no distance-based grade. Say which, rather than
+            // leaving a checkbox that silently does nothing.
             hillEnable.isEnabled = false
-            hillEnable.text = "HILL ASSIST (no sensor)"
+            hillEnable.text = "HILL ASSIST (no barometer)"
         }
         hillEnable.setOnCheckedChangeListener { _, checked -> setHillEnabled(checked) }
 
@@ -625,6 +627,20 @@ class MainActivity : Activity(), BleClient.Listener {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (requestCode == REQ_LOCATION) {
+            val granted = grantResults.isNotEmpty() &&
+                grantResults[0] == PackageManager.PERMISSION_GRANTED
+            if (granted) {
+                if (!hill.startGps()) toast("GPS speed unavailable")
+            } else {
+                // Not an error: the bike's speed sensor is the primary source and
+                // hill assist still works without GPS.
+                toast("No GPS speed - using the bike's speed sensor only")
+            }
+            return
+        }
+
         if (requestCode != REQ_PERMISSIONS) return
         if (grantResults.isNotEmpty() &&
             grantResults.all { it == PackageManager.PERMISSION_GRANTED }
@@ -805,6 +821,9 @@ class MainActivity : Activity(), BleClient.Listener {
 
     private fun render(t: Telemetry) {
         speedValue.text = number(t.speedKph, 1)
+        // Barometric grade is dh/ds, so it is only defined while we know how fast
+        // the bike is travelling; this is the distance term.
+        if (::hill.isInitialized) hill.updateBikeSpeed(t.speedKph)
 
         if (!t.hasImu) {
             slopeValue.text = getString(R.string.dash)
@@ -878,9 +897,10 @@ class MainActivity : Activity(), BleClient.Listener {
         if (on) {
             hill.start()
             hillStarted = true
-            hillLevel = HillAssist.levelFor(0.0)
+            hillLevel = BaroGrade.levelFor(0.0)
             hillCandidateSince = 0L
             pushHillLevel(force = true)
+            maybeRequestLocation()
         } else {
             hill.stop()
             hillStarted = false
@@ -893,23 +913,19 @@ class MainActivity : Activity(), BleClient.Listener {
         }
     }
 
-    private fun zeroHill() {
-        if (!hillEnabled) {
-            toast("Enable hill assist first")
+    private fun maybeRequestLocation() {
+        // GPS is only a fallback for the bike's own speed sensor, so the feature
+        // works without it; the permission buys coasting and GPS-only rides.
+        if (hill.usingGps) return
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            if (!hill.startGps()) toast("GPS speed unavailable")
             return
         }
-        hill.zero()
-        val zero = hill.zeroDegrees
-        // A near-vertical zero means the phone is mounted screen-outward, where
-        // this measurement collapses. Say so instead of showing a dead reading.
-        toast(
-            if (Math.abs(zero) > 45.0) {
-                String.format(Locale.US, "Zeroed at %+.0f deg - mount the phone flat", zero)
-            } else {
-                "Level ground captured"
-            }
-        )
+        requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), REQ_LOCATION)
     }
+
 
     private fun onGrade(grade: Double) {
         val now = SystemClock.elapsedRealtime()
@@ -922,7 +938,7 @@ class MainActivity : Activity(), BleClient.Listener {
             )
         }
 
-        val raw = HillAssist.levelFor(grade)
+        val raw = BaroGrade.levelFor(grade)
         if (raw == hillLevel) {
             hillCandidateSince = 0L
             return

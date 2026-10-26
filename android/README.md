@@ -279,10 +279,10 @@ Two consequences worth knowing:
   override and the display gets control back. Without that the bike would be stuck at
   the last commanded level with dead buttons.
 
-## Hill assist (phone sensors)
+## Hill assist (barometric grade)
 
-A checkbox on the Dashboard. When on, the phone's own orientation sensor measures the
-road grade and the app commands an assist level from it:
+A checkbox on the Dashboard. When on, the app measures road grade and commands an
+assist level from it:
 
 | Grade | Level |
 | --- | --- |
@@ -293,16 +293,66 @@ road grade and the app commands an assist level from it:
 
 `level = 1 + floor(grade%)`, clamped to 1..9.
 
-**Mount the phone flat on the bars, screen up, top of the phone pointing forward.**
-The measurement is the tilt of the device's +Y axis out of horizontal, so a
-screen-outward mount puts that axis ~90 degrees out and the signal collapses. The
-Zero button warns if it captured a near-vertical zero.
+### Where the grade comes from
 
-Press **Zero** while stopped on ground you know is level; the offset is relative to
-that, exactly like the bike's own power-on zero. Grade is smoothed hard (alpha 0.12
-on a ~50 Hz feed) because a level that twitches commands a motor that twitches, and
-level changes need both 0.25 % of hysteresis and a 1.2 s dwell so a pothole cannot
-change gear.
+Grade is **dh/ds**, so it needs a height and a distance.
+
+* **Height** from the phone's barometer. Near sea level the standard atmosphere
+  gives about **8.4 m per hPa**, and a phone barometer resolves a few pascals, so
+  a metre of climb is roughly 12 Pa — a 5 % grade is 6 Pa across ten metres.
+* **Distance** from the bike's speed sensor (telemetry `speedKph`, 1 Hz), falling
+  back to **GPS Doppler speed** when the bike is not reporting. Bike first because
+  it is the more accurate of the two; GPS covers rides where the controller is not
+  connected, and the case where the bike claims 0 while the phone is moving.
+* **The slope** is a least-squares fit of height against distance over a
+  travelling window of **8 s or 10 m, whichever is longer**, not a differentiated
+  reading — differentiating two noisy quantities gives a much noisier ratio than
+  fitting one against the other.
+
+An earlier version used the IMU pitch, and it was the wrong instrument: a phone in
+a pocket has no fixed attitude relative to the road, so its tilt says nothing about
+the hill. Barometric pressure does not care where the phone is or which way it
+points.
+
+### What to expect
+
+* **Response is about seven seconds.** The window is a boxcar filter, so a change
+  in grade arrives as a ramp of roughly that length: from flat to a 6 % climb the
+  estimate reaches half in around 3 s and settles inside 8 s. The level also has
+  0.25 % of hysteresis and a 1.2 s dwell on top, so a pothole cannot change gear.
+* **A stationary bike cannot measure a slope.** With no distance covered there is
+  nothing to differentiate, so the last known grade is held and the level stays put
+  until the bike moves again. Expect the level to lag a few seconds after pulling
+  away from a stop at the bottom of a hill.
+* **No Zero button, and none needed.** Differencing cancels the pressure offset
+  entirely, so unlike the IMU version there is no "level ground" reference to
+  capture. Weather drift is negligible in this role: 1 hPa/hour is 8.4 m/hour,
+  which at 20 km/h is a 0.04 % grade error.
+* **No barometer, no feature.** The checkbox is disabled and says so rather than
+  silently doing nothing.
+
+GPS speed needs location permission, requested when the checkbox is first ticked.
+Refusing it is not fatal — hill assist keeps working from the bike's speed sensor,
+which is the primary source anyway.
+
+### Accuracy
+
+Validated offline against a synthetic ride (standard-atmosphere pressure, GPS-like
+noise, the same fitting code) rather than on the bike:
+
+| Case | Estimate | Truth |
+| --- | --- | --- |
+| 5 % climb, 20 km/h | +5.00 % | +5.00 % |
+| 8 % climb, 12 km/h | +8.01 % | +8.00 % |
+| 15 % climb, 8 km/h | +15.00 % | +15.00 % |
+| 6 % descent, 25 km/h | −6.00 % | −6.00 % |
+| flat, 22 km/h | +0.01 % | 0.00 % |
+| 3 % climb, 6 km/h | +3.02 % | +3.00 % |
+
+Pressure noise of 3 Pa — ten times a typical barometer's floor — moves the steady
+reading by under 0.2 %. The remaining error is dominated by the **speed** source,
+not the sensor: grade scales inversely with speed, so a 5 % speed error reads as a
+5 % grade error.
 
 ## Known limitation: one-shot PAS injection
 

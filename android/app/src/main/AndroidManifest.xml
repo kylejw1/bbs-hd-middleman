@@ -7,8 +7,13 @@
         Android, where scanning also requires location.
 
         BLUETOOTH_SCAN carries neverForLocation: this app never derives location
-        from scan results, which is what lets it skip the location permission
-        entirely on Android 12+.
+        from scan results.
+
+        FINE_LOCATION is no longer maxSdkVersion-limited. On Android 11 and below
+        it is still required to scan; on every version it is also what makes GPS
+        speed available as a fallback for hill assist. It is requested at runtime
+        only when hill assist is switched on, and the feature works without it
+        (the bike's own speed sensor is the primary source).
     -->
     <uses-permission
         android:name="android.permission.BLUETOOTH"
@@ -16,9 +21,7 @@
     <uses-permission
         android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
-    <uses-permission
-        android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission
         android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" />

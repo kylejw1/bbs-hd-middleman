@@ -112,14 +112,6 @@
                 android:textColor="@color/fg"
                 android:textSize="13sp" />
 
-            <Button
-                android:id="@+id/hillZero"
-                android:layout_width="wrap_content"
-                android:layout_height="38dp"
-                android:layout_marginStart="6dp"
-                android:minWidth="0dp"
-                android:text="Zero"
-                android:textSize="11sp" />
         </LinearLayout>
 
         <!-- Controls that write to the controller. Labels track telemetry, not the
