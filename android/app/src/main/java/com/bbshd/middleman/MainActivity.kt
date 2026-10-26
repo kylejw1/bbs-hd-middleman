@@ -85,7 +85,6 @@ class MainActivity : Activity(), BleClient.Listener {
     private lateinit var pasValue: TextView
     private lateinit var gridContainer: LinearLayout
     private lateinit var curveView: PulseCurveView
-    private lateinit var modeButton: Button
 
     // Events
     private lateinit var eventsList: LinearLayout
@@ -115,7 +114,6 @@ class MainActivity : Activity(), BleClient.Listener {
     // to start from what the bike actually reported, not from what was last
     // tapped -- otherwise a rejected command drifts further from reality.
     private var lastAssist: Int? = null
-    private var lastModeSport = false
 
     // Hill assist
     private lateinit var hill: BaroGrade
@@ -124,6 +122,8 @@ class MainActivity : Activity(), BleClient.Listener {
     private var hillEnabled = false
     /** True once this app has commanded a level, so the hero can show it. */
     private var levelCommanded = false
+    /** Which level table the curve draws from; the mode is read, not switched. */
+    private var lastModeSport = false
     private var hillLevel = 1
     private var hillCandidateSince = 0L
     private var hillLastSentLevel: Int? = null
@@ -332,13 +332,11 @@ class MainActivity : Activity(), BleClient.Listener {
         pasValue = dashboard.findViewById(R.id.pasValue)
         gridContainer = dashboard.findViewById(R.id.gridContainer)
         curveView = dashboard.findViewById(R.id.curveView)
-        modeButton = dashboard.findViewById(R.id.modeButton)
 
         buildGrid()
 
         dashboard.findViewById<Button>(R.id.assistUp).setOnClickListener { nudgeAssist(+1) }
         dashboard.findViewById<Button>(R.id.assistDown).setOnClickListener { nudgeAssist(-1) }
-        modeButton.setOnClickListener { toggleMode() }
 
         hillEnable = dashboard.findViewById(R.id.hillEnable)
         hillGrade = dashboard.findViewById(R.id.hillGrade)
@@ -748,27 +746,16 @@ class MainActivity : Activity(), BleClient.Listener {
         levelCommanded = true
 
         ble.post("/api/cmd/pas", "{\"level\":$target}") { status, _ ->
-            if (status != 200) {
+            // Revert only on a real error status. A timeout usually means the
+            // command landed and the reply was dropped; the next push corrects
+            // the number either way, so a toast here would be crying wolf.
+            if (status > 0 && status != 200) {
                 lastAssist = current
-                toast("Assist change failed (${if (status < 0) "no reply" else "$status"})")
+                toast("Assist change failed ($status)")
             }
         }
     }
 
-    private fun toggleMode() {
-        val target = if (lastModeSport) 0 else 1
-        val previous = lastModeSport
-        lastModeSport = target == 1
-        modeButton.text = if (lastModeSport) "Sport" else "Standard"
-
-        ble.post("/api/cmd/mode", "{\"mode\":$target}") { status, _ ->
-            if (status != 200) {
-                lastModeSport = previous
-                modeButton.text = if (lastModeSport) "Sport" else "Standard"
-                toast("Mode change failed (${if (status < 0) "no reply" else "$status"})")
-            }
-        }
-    }
 
 
     // --- telemetry ------------------------------------------------------------
@@ -871,6 +858,7 @@ class MainActivity : Activity(), BleClient.Listener {
         }
 
         put("assist", if (displayOk) t.assistLevel?.toString() else null)
+        lastModeSport = t.operationMode.equals("Sport", ignoreCase = true)
         put("mode", if (displayOk) t.operationMode else null)
         put("status", if (displayOk) t.statusCode?.let { if (it == 0) "OK" else "E$it" } else null)
         put("lights", if (displayOk) (if (t.lights) "ON" else "OFF") else null)
@@ -879,8 +867,6 @@ class MainActivity : Activity(), BleClient.Listener {
         // The controls mirror what the display last told us; with no display that
         // is nothing, and "0" beside a STANDARD button reads as state we know.
 
-        lastModeSport = t.operationMode.equals("Sport", ignoreCase = true)
-        modeButton.text = if (displayOk) t.operationMode ?: DASH else DASH
 
 
         // Re-select the curve only when the level or mode actually changed; the
@@ -963,9 +949,10 @@ class MainActivity : Activity(), BleClient.Listener {
         }
 
         // Hysteresis, or the level chatters at every band boundary. Going up we
-        // want to be a little way into the new band; going down, a little way
-        // below the old one.
-        val margin = 0.25
+        // want to be well into the new band; going down, well below the old one.
+        // 0.6 % is over half a band, so a reading that merely wobbles around a
+        // boundary cannot move a level in either direction.
+        val margin = 0.6
         val inside = if (raw > hillLevel) {
             grade >= (raw - 1) + margin
         } else {
@@ -976,12 +963,14 @@ class MainActivity : Activity(), BleClient.Listener {
             return
         }
 
-        // And a dwell, so a bump or a pothole cannot change gear.
+        // And a dwell: the grade has to stay in the new band for three seconds
+        // before the level follows, so a pothole, a dip in the road or one noisy
+        // barometer sample cannot change gear.
         if (hillCandidateSince == 0L) {
             hillCandidateSince = now
             return
         }
-        if (now - hillCandidateSince < 1_200) return
+        if (now - hillCandidateSince < 3_000) return
 
         hillLevel = raw
         hillCandidateSince = 0L
@@ -997,8 +986,12 @@ class MainActivity : Activity(), BleClient.Listener {
         hillLastSentLevel = hillLevel
         hillLastSendMs = now
         ble.post("/api/cmd/auto-assist", "{\"enabled\":true,\"level\":$hillLevel}") { status, _ ->
-            if (status != 200) {
-                toast("Hill assist rejected (${if (status < 0) "no reply" else "$status"})")
+            // A timeout is not a failure: the command demonstrably reaches the
+            // controller and it is the *reply* that gets dropped when the radio
+            // is busy. The next telemetry push shows the true level within a
+            // second, so reporting this as an error was pure noise.
+            if (status in 1..Int.MAX_VALUE && status != 200 && !hillEnabled) {
+                toast("Hill assist rejected ($status)")
             }
         }
     }

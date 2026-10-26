@@ -210,15 +210,6 @@
                     android:textSize="26sp" />
             </LinearLayout>
 
-            <Button
-                android:id="@+id/modeButton"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_marginStart="8dp"
-                android:layout_weight="1"
-                android:minWidth="0dp"
-                android:text="@string/dash"
-                android:textSize="12sp" />
 
         </LinearLayout>
 
