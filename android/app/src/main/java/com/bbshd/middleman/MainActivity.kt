@@ -830,13 +830,12 @@ class MainActivity : Activity(), BleClient.Listener {
 
         cadenceValue.text = if (t.hasTargetTelemetry) number(t.cadenceRpm, 0)
                             else getString(R.string.dash)
-        // The level is known from a display's own writes, from a level this app
-        // commanded, or from an override it is driving. With none of those, 0
-        // would be a guess rather than a reading.
-        val levelKnown = displayOk || levelCommanded ||
-                         (hillEnabled && hillLastSentLevel != null)
-        pasValue.text = if (levelKnown) t.assistLevel?.toString() ?: getString(R.string.dash)
-                        else getString(R.string.dash)
+        // Always show the level the bridge believes is in force: a display's
+        // writes, this app's own nudges, and the override all feed it. There is
+        // no display query that reports the level back, so hiding it when none of
+        // those has happened yet left the hero blank while the bike sat at a
+        // perfectly real level.
+        pasValue.text = t.assistLevel?.toString() ?: getString(R.string.dash)
 
         put("power", if (vehicleOk) t.powerWatts?.let { "$it" } else null)
         put("current", if (vehicleOk) number(t.currentAmps, 1) else null)
