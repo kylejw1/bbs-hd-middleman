@@ -21,10 +21,6 @@ LcdDisplay::LcdDisplay()
     , _initialised(false)
     , _spritesOk(false)
     , _lastRefreshMs(0)
-#if LCD_IMU_PAGE
-    , _page(LCD_START_PAGE)
-    , _lastPageSwitchMs(0)
-#endif
     , _dirtyRow0(true)
     , _dirtyRow1(true)
     , _dirtyChart(true)
@@ -76,10 +72,6 @@ void LcdDisplay::begin() {
     _sprRow0.createPalette(LCD_PALETTE, 16);
     _sprRow1.createPalette(LCD_PALETTE, 16);
     _sprChart.createPalette(LCD_PALETTE, 16);
-
-#if LCD_IMU_PAGE
-    _lastPageSwitchMs = millis();   // bike page first
-#endif
     _initialised = true;
     Serial.printf("[LCD] %s ready %dx%d, sprites %u B @ %dbpp, free heap %u -> %u\n",
                   LCD_DISPLAY_NAME, W, H, spriteBytes, LCD_SPRITE_BPP,
@@ -94,40 +86,8 @@ void LcdDisplay::process() {
 
     uint32_t now = millis();
 
-#if LCD_IMU_PAGE
-    // Page selection. With LCD_PAGE_MS == 0 the display is pinned to
-    // LCD_START_PAGE and never alternates; the cycling path below is intact and
-    // simply never fires. When cycling IS on it only leaves page 0 while an
-    // MPU-6050 actually answered on the bus, so a board without one behaves as
-    // it did before.
-    if (LCD_PAGE_MS > 0 && Mpu.isPresent()) {
-        if (now - _lastPageSwitchMs >= LCD_PAGE_MS) {
-            _lastPageSwitchMs = now;
-            _page ^= 1;
-            _invalidateSnapshot();
-        }
-    } else {
-        const uint8_t want = (LCD_PAGE_MS > 0) ? 0 : (uint8_t)LCD_START_PAGE;
-        if (_page != want) {
-            _page = want;
-            _invalidateSnapshot();
-        }
-    }
-
-    // The IMU page carries a live bubble level, so it runs faster than the bike
-    // page's lazy diff-and-push refresh.
-    const uint32_t interval = (_page == 1) ? LCD_IMU_REFRESH_MS : LCD_REFRESH_MS;
-    if (now - _lastRefreshMs < interval) return;
-    _lastRefreshMs = now;
-
-    if (_page == 1) {
-        _renderImuPage();
-        return;
-    }
-#else
     if (now - _lastRefreshMs < LCD_REFRESH_MS) return;
     _lastRefreshMs = now;
-#endif
 
     _snapshotAndDiff();
 
@@ -177,24 +137,16 @@ void LcdDisplay::_snapshotAndDiff() {
     //   GC9A01   row 0: cadence | target current %   row 1: hero slope | target spd %
     //   ST7789   row 0: cadence | mRPM | I% | S%     row 1: batt | A | W | PAS
     //
-    // Slope is the one term that does not come from the 0xEC target frame, so it
-    // needs its own comparison against what was last drawn.
-    float slopeDeg = Mpu.isPresent() ? Mpu.slopeDeg() : 0.0f;
-    // The hero figure prints %+.1f, so a runaway estimate would wrap an int16.
-    if (slopeDeg < -320.0f) slopeDeg = -320.0f;
-    if (slopeDeg >  320.0f) slopeDeg =  320.0f;
-    const int16_t slopeDeg10 = (int16_t)roundf(slopeDeg * 10.0f);
-
 #if defined(LCD_DISPLAY_GC9A01)
-    const bool slopeChanged = (slopeDeg10 != _last.slopeDeg10);
-
+    // Row 0 carries the two target percentages; row 1 carries the two heroes.
     const bool row0Changed = (hasTgt != _last.hasTargetTelemetry ||
-                              cadRpm != _last.cadenceRpm         ||
-                              tgtI   != _last.targetCurrentPct);
+                              tgtI   != _last.targetCurrentPct   ||
+                              tgtS   != _last.targetSpeedPct);
 
-    // The hero slope is drawn HERE, with target speed % underneath it.
-    const bool row1Changed = (slopeChanged ||
-                              tgtS != _last.targetSpeedPct);
+    const bool row1Changed = (hasTgt != _last.hasTargetTelemetry ||
+                              cadRpm != _last.cadenceRpm         ||
+                              pal    != _last.assistLevel        ||
+                              opMode != _last.operationMode);
 #else
     const bool row0Changed = (hasTgt != _last.hasTargetTelemetry ||
                               cadRpm != _last.cadenceRpm         ||
@@ -217,10 +169,11 @@ void LcdDisplay::_snapshotAndDiff() {
                           keepPct != _last.pasKeepCurrentPct       ||
                           keepRpm != _last.pasKeepCurrentCadenceRpm||
                           opMode  != _last.operationMode);
-    // Only cadence and the target current move the chart's cursor -- both live in
-    // row 0 on either target. The slope is not drawn on the chart, so it must not
-    // force a chart repaint.
-    bool cursorChanged = row0Changed;
+    // Only cadence and the target current move the chart's cursor. On the round
+    // target cadence now lives in row 1, so this cannot be row0Changed.
+    bool cursorChanged = (hasTgt != _last.hasTargetTelemetry ||
+                          cadRpm != _last.cadenceRpm         ||
+                          tgtI   != _last.targetCurrentPct);
 
     // Per-level snapshot for the active mode
     bool levelChanged = false;
@@ -248,7 +201,6 @@ void LcdDisplay::_snapshotAndDiff() {
     _last.motorRpm                 = motRpm;
     _last.targetCurrentPct         = tgtI;
     _last.targetSpeedPct           = tgtS;
-    _last.slopeDeg10               = slopeDeg10;
     _last.batteryPct               = battPct;
     _last.currentAmps              = curAmps;
     _last.powerWatts               = watts;
@@ -272,19 +224,19 @@ void LcdDisplay::_renderRow0() {
 #if defined(LCD_DISPLAY_GC9A01)
     // Bare values only: no tile frame, no label. The frame was the grid and the
     // label was a title, and on a 240 px circle both cost more room than the
-    // numbers they annotated. Cadence left, target current right, with the hero
-    // slope centred between them on the row below.
+    // numbers they annotated. Target current left, target speed right; the two
+    // heroes the rider steers by sit below.
     _sprRow0.setTextDatum(MC_DATUM);
     _sprRow0.setTextFont(2);
-
-    if (_last.hasTargetTelemetry) _fmtInt(buf, sizeof(buf), _last.cadenceRpm);
-    else                          strcpy(buf, "--");
-    _sprRow0.setTextColor(PAL_ACCENT_CYAN, PAL_BG);
-    _sprRow0.drawString(buf, FLANK_L_X, ROW0_H / 2);
 
     if (_last.hasTargetTelemetry) snprintf(buf, sizeof(buf), "%d%%", _last.targetCurrentPct);
     else                          strcpy(buf, "--");
     _sprRow0.setTextColor(PAL_ACCENT_YELL, PAL_BG);
+    _sprRow0.drawString(buf, FLANK_L_X, ROW0_H / 2);
+
+    if (_last.hasTargetTelemetry) snprintf(buf, sizeof(buf), "%d%%", _last.targetSpeedPct);
+    else                          strcpy(buf, "--");
+    _sprRow0.setTextColor(PAL_TEXT_WHITE, PAL_BG);
     _sprRow0.drawString(buf, FLANK_R_X, ROW0_H / 2);
 #else
     // Tile 0: Cadence RPM
@@ -333,47 +285,25 @@ void LcdDisplay::_renderRow1() {
     char buf[16];
 
 #if defined(LCD_DISPLAY_GC9A01)
-    // The hero: slope in degrees at font 6 (48 px against font 2's 16), centred.
+    // Two heroes: rider cadence and the assist level actually in force. Both are
+    // 48 px figures, against font 2's 16 for everything else, because these are
+    // the two numbers a PAS rider steers by.
     //
-    // The value comes from _last.slopeDeg10 rather than straight from the IMU so
-    // that what is drawn is exactly what the dirty check compared -- reading the
-    // sensor again here could paint a value the diff never saw change.
-    //
-    // The degree sign is drawn as a primitive. TFT_eSPI's built-in fonts cover
-    // ASCII 32..127 only, so there is no degree glyph to print, and the word
-    // "deg" would be a title -- which is what this layout is removing.
-    const bool imuOk = Mpu.isPresent();
-    char num[16];
-    if (imuOk) snprintf(num, sizeof(num), "%+.1f", _last.slopeDeg10 / 10.0f);
-    else       strcpy(num, "--");
-
+    // The level carries its mode letter -- P for Standard, S for Sport -- which
+    // is a glyph rather than a label, so it stays self-describing without
+    // reintroducing the titles this layout removed.
     _sprRow1.setTextFont(6);
-    _sprRow1.setTextColor(PAL_ACCENT_GREEN, PAL_BG);
-
-    const int16_t tw   = _sprRow1.textWidth(num);
-    const int16_t degR = 5;
-    const int16_t gap  = 5;
-    const int16_t span = tw + (imuOk ? (gap + degR * 2) : 0);
-    const int16_t x0   = (W - span) / 2;
-
-    _sprRow1.setTextDatum(TL_DATUM);
-    _sprRow1.drawString(num, x0, BIG_SLOPE_TOP);
-
-    if (imuOk) {
-        // Top-right of the number, which is where a degree symbol sits.
-        const int16_t dx = x0 + tw + gap + degR;
-        const int16_t dy = BIG_SLOPE_TOP + 12;
-        _sprRow1.drawCircle(dx, dy, degR, PAL_ACCENT_GREEN);
-        _sprRow1.drawCircle(dx, dy, degR - 1, PAL_ACCENT_GREEN);
-    }
-
-    // Target speed %, directly under the hero.
-    if (_last.hasTargetTelemetry) snprintf(buf, sizeof(buf), "%d%%", _last.targetSpeedPct);
-    else                          strcpy(buf, "--");
-    _sprRow1.setTextFont(2);
-    _sprRow1.setTextColor(PAL_TEXT_WHITE, PAL_BG);
     _sprRow1.setTextDatum(MC_DATUM);
-    _sprRow1.drawString(buf, W / 2, SUB_VALUE_CY);
+
+    if (_last.hasTargetTelemetry) _fmtInt(buf, sizeof(buf), _last.cadenceRpm);
+    else                          strcpy(buf, "--");
+    _sprRow1.setTextColor(PAL_ACCENT_CYAN, PAL_BG);
+    _sprRow1.drawString(buf, HERO_L_X, HERO_TOP + 24);
+
+    snprintf(buf, sizeof(buf), "%c%d",
+             _last.operationMode == 1 ? 'S' : 'P', _last.assistLevel);
+    _sprRow1.setTextColor(PAL_ACCENT_GREEN, PAL_BG);
+    _sprRow1.drawString(buf, HERO_R_X, HERO_TOP + 24);
 #else
     // Tile 0: Battery %
     uint8_t battColor = PAL_ACCENT_GREEN;
@@ -415,127 +345,6 @@ void LcdDisplay::_renderChart() {
 
     _sprChart.pushSprite(CHART_X, CHART_Y);
 }
-
-#if LCD_IMU_PAGE
-// =============================================================================
-// _renderImuPage() — page 1: the MPU-6050 readout
-//
-// Reuses the three bike-page sprite regions rather than allocating a full-screen
-// sprite: another 240x240 buffer would be ~29 KB of heap even at 4bpp, and on a
-// classic ESP32 the Wi-Fi stack needs what is left.
-//
-// Bubble level: the dot is the gravity vector projected onto the panel. 0.5 px
-// per degree puts 30 degrees of tilt at the edge of the ring.
-// =============================================================================
-void LcdDisplay::_renderImuPage() {
-    const Mpu6050::Sample& s = Mpu.sample();
-    char buf[40];
-
-    // --- Row 0: identity and bus health ---
-    // One line, not two: the bike-page redesign left this sprite 22 px tall.
-    _sprRow0.fillSprite(PAL_BG);
-    _sprRow0.setTextDatum(MC_DATUM);
-    _sprRow0.setTextFont(1);
-    _sprRow0.setTextColor(PAL_ACCENT_CYAN, PAL_BG);
-    snprintf(buf, sizeof(buf), "MPU-6050  0x%02X  WHO 0x%02X  %u Hz",
-             Mpu.address(), (unsigned)Mpu.whoAmI(), (unsigned)Mpu.sampleRateHz());
-    _sprRow0.drawString(buf, W / 2, ROW0_H / 2);
-    _sprRow0.pushSprite(0, ROW0_Y);
-
-    // --- Row 1: the numbers ---
-    // Five lines in 88 px. Font 2 is 16 px tall so it gets 18 px of pitch, and
-    // the three longer lines drop to font 1 (8 px) so they still fit the circle
-    // as it narrows towards the bottom of the sprite.
-    _sprRow1.fillSprite(PAL_BG);
-    _sprRow1.setTextDatum(MC_DATUM);
-    _sprRow1.setTextFont(2);
-    _sprRow1.setTextColor(PAL_ACCENT_GREEN, PAL_BG);
-    snprintf(buf, sizeof(buf), "Ax %+.3f  Ay %+.3f", s.ax, s.ay);
-    _sprRow1.drawString(buf, W / 2, 10);
-    snprintf(buf, sizeof(buf), "Az %+.3f  T %+.1f", s.az, s.tempC);
-    _sprRow1.drawString(buf, W / 2, 28);
-
-    _sprRow1.setTextFont(1);
-    _sprRow1.setTextColor(PAL_ACCENT_YELL, PAL_BG);
-    snprintf(buf, sizeof(buf), "G %+.1f %+.1f %+.1f dps", s.gx, s.gy, s.gz);
-    _sprRow1.drawString(buf, W / 2, 44);
-
-    // Raw sensor attitude, straight from the estimator. Kept on this page
-    // precisely because it is the uncalibrated number: it shows how far the
-    // board sits from level in its mount, which is what the zero below removes.
-    _sprRow1.setTextColor(PAL_TEXT_WHITE, PAL_BG);
-    snprintf(buf, sizeof(buf), "P %+.1f  R %+.1f", s.pitchDeg, s.rollDeg);
-    _sprRow1.drawString(buf, W / 2, 58);
-
-    // Calibrated attitude: mounting bias subtracted, so level on this bike reads
-    // 0.0. This is the value the bike page shows as its hero figure.
-    _sprRow1.setTextColor(PAL_ACCENT_CYAN, PAL_BG);
-    snprintf(buf, sizeof(buf), "slope %+.1f  lean %+.1f", Mpu.slopeDeg(), Mpu.leanDeg());
-    _sprRow1.drawString(buf, W / 2, 72);
-    _sprRow1.pushSprite(0, ROW1_Y);
-
-    // --- Chart region: the bubble level ---
-    // It lives up here now because the bike page took the region below for its
-    // hero figure. 192x56 is smaller than it used to be, hence r=22.
-    _sprChart.fillSprite(PAL_BG);
-
-    const int16_t cx = CHART_W / 2;
-    const int16_t cy = CHART_H / 2;
-    const int16_t r  = 22;
-    _sprChart.drawCircle(cx, cy, r, PAL_BORDER);
-    _sprChart.drawCircle(cx, cy, r / 2, PAL_BORDER);
-    _sprChart.drawFastHLine(cx - r, cy, r * 2, PAL_BORDER);
-    _sprChart.drawFastVLine(cx, cy - r, r * 2, PAL_BORDER);
-
-    // Bubble level, on the CALIBRATED angles so that a bike sitting level shows
-    // a centred dot. Driving it from the raw angles would park the dot off
-    // centre by the mounting offset for the life of the install.
-    // Horizontal is lean, vertical is slope; nose-up is negative dy so climbing
-    // tilts the dot forward/up on screen.
-    float dx =  Mpu.leanDeg()  * 0.5f;
-    float dy = -Mpu.slopeDeg() * 0.5f;
-    const float mag = sqrtf(dx * dx + dy * dy);
-    if (mag > (float)(r - 3)) {
-        const float k = (float)(r - 3) / mag;
-        dx *= k;
-        dy *= k;
-    }
-    _sprChart.fillCircle(cx + (int16_t)dx, cy + (int16_t)dy, 3, PAL_CURSOR_CLR);
-
-    _sprChart.pushSprite(CHART_X, CHART_Y);
-}
-#endif // LCD_IMU_PAGE
-
-#if defined(LCD_DISPLAY_GC9A01)
-// =============================================================================
-// _drawStatusLine() — GC9A01 only
-//
-// Battery / current / watts / PAS on one centred line, kept short so it stays
-// inside the r=120 circle at that height.
-//
-// NOT CURRENTLY CALLED. The bike page is now graph + hero slope + three bare
-// values, and this line was the text that used to sit under the curve. It is
-// kept rather than deleted because those four readings are genuinely useful and
-// restoring them is a one-line call -- but there is no room for it in the
-// current layout, so if you call it again, find it a region first.
-// =============================================================================
-void LcdDisplay::_drawStatusLine(TFT_eSprite& spr, int16_t w, int16_t y) {
-    char buf[40];
-    const char* modeChar = (_last.operationMode == 1) ? "S" : "P";
-    snprintf(buf, sizeof(buf), "%d%% %.1fA %uW %s%d",
-             _last.batteryPct, _last.currentAmps,
-             (unsigned)_last.powerWatts, modeChar, _last.assistLevel);
-
-    spr.setTextFont(2);
-    spr.setTextSize(1);
-    spr.setTextColor(PAL_TEXT_WHITE, PAL_BG);
-
-    int16_t tx = (w - spr.textWidth(buf)) / 2;
-    if (tx < 0) tx = 0;
-    spr.setCursor(tx, y);
-    spr.print(buf);
-}
-#endif
 
 // =============================================================================
 // _drawCurve() — the core chart renderer

@@ -50,8 +50,6 @@ public:
     void injectLights(bool on);
     void injectOperationMode(uint8_t mode);
 
-    // Send inclination (pitch and roll, degrees) to motor controller
-    void sendInclination(float pitchDeg, float rollDeg);
 
     // State getters
     BridgeState getState() const;
@@ -114,9 +112,7 @@ private:
     void processDisplayRxPassThrough();
     void processControllerRxPassThrough();
     void processDisplayRxIntercept();
-    void processPeriodicInclination();
 
-    uint32_t _lastInclinationSentMs;
 
     // Protocol helper handlers
     void handleDisplayPacket(const uint8_t* buf, size_t len);

@@ -55,16 +55,7 @@
 
 #include <Arduino.h>
 #include <TFT_eSPI.h>
-#include "Mpu6050.h"
 
-// The IMU page exists only on the round target: the ST7789 is a 284x76 strip
-// with no room for six axis values plus a bubble level. On the strip, or with
-// MPU6050_ENABLED=0, this is 0 and the page costs nothing.
-#if MPU6050_ENABLED && defined(LCD_DISPLAY_GC9A01)
-  #define LCD_IMU_PAGE 1
-#else
-  #define LCD_IMU_PAGE 0
-#endif
 
 // ---------------------------------------------------------------------------
 // Forward declaration — the global singleton
@@ -196,7 +187,7 @@ private:
     static constexpr int16_t CHART_H = 56;
     static constexpr int16_t CURVE_H = CHART_H;   // the chart is all curve now
 
-    // --- Row 0: the two values flanking the big slope ---
+    // --- Row 0: the two target percentages, above the heroes ---
     // Full-width sprite with inset content: a 240 px row is not fully visible
     // this high up, but these two values are centred well inside the circle.
     static constexpr int16_t ROW0_Y    = 108;
@@ -204,14 +195,15 @@ private:
     static constexpr int16_t FLANK_L_X = 54;
     static constexpr int16_t FLANK_R_X = 186;
 
-    // --- Row 1: the hero slope, with one value beneath it ---
+    // --- Row 1: cadence and PAS, the two figures the rider acts on ---
     static constexpr int16_t ROW1_Y = 132;
     static constexpr int16_t ROW1_H = 88;
 
-    // Layout inside row 1. TFT_eSPI's font 6 is 48 px tall; the sub-value sits
-    // under it. Both are vertically centred on the sprite's own width.
-    static constexpr int16_t BIG_SLOPE_TOP = 4;
-    static constexpr int16_t SUB_VALUE_CY  = 72;
+    // Layout inside row 1: two hero figures side by side at font 6 (48 px)
+    // against font 2's 16. Cadence left, PAS right, each centred in its half.
+    static constexpr int16_t HERO_TOP = 12;
+    static constexpr int16_t HERO_L_X = 62;
+    static constexpr int16_t HERO_R_X = 178;
 #endif
 
     // Sprites — one per region, allocated in begin(). Common to both targets so
@@ -228,13 +220,6 @@ private:
         uint8_t  motorRpm;
         uint8_t  targetCurrentPct;
         uint8_t  targetSpeedPct;
-        // Calibrated slope in tenths of a degree -- exactly the number the
-        // GC9A01 row-0 tile prints. Kept as an integer so a repaint is driven
-        // by "the displayed text changed" rather than a float epsilon, and so
-        // the memset(0xFF) invalidation compares correctly instead of leaving
-        // NaN in the field (any comparison against NaN is false, which would
-        // silently suppress the first paint).
-        int16_t  slopeDeg10;
         uint8_t  batteryPct;
         float    currentAmps;
         uint16_t powerWatts;
@@ -256,13 +241,6 @@ private:
     bool     _spritesOk;      // false if any sprite allocation failed
     uint32_t _lastRefreshMs;
 
-#if LCD_IMU_PAGE
-    // Page 0 = bike telemetry, page 1 = IMU. The display only ever leaves page 0
-    // when an MPU-6050 actually answered on the bus, so a board without one
-    // behaves exactly as it did before.
-    uint8_t  _page;
-    uint32_t _lastPageSwitchMs;
-#endif
 
     // Dirty flags — set true when data changes
     bool _dirtyRow0;
@@ -281,19 +259,6 @@ private:
     void _renderRow1();
     void _renderChart();
 
-#if LCD_IMU_PAGE
-    // Page 1: the MPU-6050 readout. Reuses the same three sprite regions as the
-    // bike page, so it costs no extra RAM.
-    void _renderImuPage();
-
-    // Force the next bike-page diff to repaint every region. Used on a page
-    // switch, so the incoming page never diffs against the other page's values.
-    void _invalidateSnapshot() {
-        memset(&_last, 0xFF, sizeof(_last));
-        _last.currentAmps = -1.0f;
-        _dirtyRow0 = _dirtyRow1 = _dirtyChart = true;
-    }
-#endif
 
     // Draw a single numeric "tile" into the sprite spr at (x, y, w, h).
     // label is the small dim label above the value.

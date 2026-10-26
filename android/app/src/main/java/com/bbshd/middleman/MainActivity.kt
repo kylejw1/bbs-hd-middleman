@@ -83,8 +83,6 @@ class MainActivity : Activity(), BleClient.Listener {
     private lateinit var speedValue: TextView
     private lateinit var cadenceValue: TextView
     private lateinit var pasValue: TextView
-    /** Whether the bike itself reports an IMU, decided from telemetry. */
-    private var bikeHasImu = false
     private lateinit var gridContainer: LinearLayout
     private lateinit var curveView: PulseCurveView
     private lateinit var assistValue: TextView
@@ -840,14 +838,9 @@ class MainActivity : Activity(), BleClient.Listener {
         // the bike is travelling; this is the distance term.
         if (::hill.isInitialized) hill.updateBikeSpeed(t.speedKph)
 
-        bikeHasImu = t.hasImu
-        if (t.hasImu) {
-            showSlopeDegrees(t.slopeDeg)
-        } else {
-            // No IMU on the bike. The phone's barometric grade is the only slope
-            // there is, and it is the reason this hero sat at "--" otherwise.
-            showPhoneGrade()
-        }
+        // Grade comes from the phone's barometer and the bike's wheel speed: the
+        // middleman has no IMU, by design.
+        showPhoneGrade()
 
         cadenceValue.text = if (t.hasTargetTelemetry) number(t.cadenceRpm, 0)
                             else getString(R.string.dash)
@@ -946,7 +939,7 @@ class MainActivity : Activity(), BleClient.Listener {
         // The sensor runs at ~50 Hz; the label only needs 10.
         if (now - hillUiLastMs >= 100) {
             hillUiLastMs = now
-            if (!bikeHasImu) showPhoneGrade()
+            showPhoneGrade()
 
             hillGrade.text = if (hillEnabled) {
                 String.format(Locale.US, "%s%.1f%%  L%d", if (grade >= 0) "+" else "", grade, hillLevel)

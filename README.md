@@ -224,7 +224,7 @@ Or over USB: `adb install -r android/dist/middleman-debug.apk`.
 
 No account, no fee, no review queue — the store only matters when you are distributing to strangers. The one catch is updates: Android refuses to update an installed app whose signing key changed, so if you rebuild the APK yourself, uninstall the old copy first (`adb uninstall com.bbshd.middleman`).
 
-The app is a **viewer**. It shows speed, slope, power, current, battery, voltage, cadence, motor rpm, the live targets, assist, mode and the event log. Configuration editing and firmware upload stay on the web dashboard. See [`android/README.md`](android/README.md) to build it.
+The app is a **viewer**. It shows speed, a barometric grade, power, current, battery, voltage, cadence, motor rpm, the live targets, assist, mode and the event log. Configuration editing and firmware upload stay on the web dashboard. See [`android/README.md`](android/README.md) to build it.
 
 ---
 

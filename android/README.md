@@ -98,10 +98,12 @@ Android Gradle Plugin itself.
 The two figures a rider acts on get the top third of the screen; everything else
 is a grid of bare values underneath, plus the tail of the event log.
 
-| Hero | Source field |
+| Hero | Source |
 | :--- | :--- |
-| Slope, in degrees, signed | `imuSlopeDeg` (calibrated: 0° is level on *this* bike) |
+| Slope, in degrees, signed | The phone's barometric grade, converted from percent with `atan` |
 | Speed, km/h | `speedKph` |
+| Cadence | `cadenceRpm` |
+| PAS | `assistLevel`, with the mode letter |
 
 | Cell | Source field |
 | :--- | :--- |
@@ -109,18 +111,17 @@ is a grid of bare values underneath, plus the tail of the event log.
 | Amps | `currentAmps` |
 | Battery | `batteryPercent` |
 | Volts | `batteryVoltage` |
-| Cadence | `cadenceRpm` |
 | Motor RPM | `motorRpm` |
 | Target current | `targetCurrentPercent` |
 | Target speed | `targetSpeedPercent` |
-| Assist | `assistLevel` |
 | Mode | `operationMode` |
 | Status | `statusCode` (`OK`, or `E<n>`) |
 | Lights | `lights` |
 
 The slope goes amber past ±8°, because that is where gearing decisions get made.
-When no MPU-6050 answered at boot the slope shows `--` rather than a fabricated
-`+0.0°`.
+There is no IMU anywhere in this system: the middleman has none, and the phone's
+grade comes from the barometer, so the hero reads `--` until that has produced a
+reading rather than showing a fabricated `+0.0°`.
 
 The cadence / motor RPM / target rows show `--` when `hasTargetTelemetry` is
 false. That flag means the firmware's `0xEC` debug frame has not arrived in the
@@ -283,12 +284,10 @@ Two consequences worth knowing:
 
 Four large figures above the curve: **SLOPE**, **KM/H**, **CADENCE** and **PAS**.
 
-**SLOPE is in degrees, from whichever source is real.** If the bike reports an IMU
-(`hasImu`), that is the sensor's calibrated slope. If it does not — this bike has no
-MPU-6050 — the hero falls back to the phone's barometric grade, converted from
-percent to degrees with `atan`, so the number keeps its unit and its label. Before
-that fallback existed the hero read `--` permanently on any bike without an IMU,
-which is why it looked frozen.
+**SLOPE is the phone's barometric grade**, converted from percent to degrees with
+`atan` so the figure keeps the unit and the label it has always had. There is no
+IMU in the system to fall back to: the middleman has none, by design, and grade
+comes from pressure against distance.
 
 CADENCE and PAS come from the `0xEC` target frame; CADENCE reads `--` whenever that
 frame is absent, because a stale pedal rate is worse than a blank one.

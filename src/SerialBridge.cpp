@@ -1,6 +1,5 @@
 #include "SerialBridge.h"
 #include "DebugLog.h"
-#include "Mpu6050.h"
 
 SerialBridge Bridge;
 
@@ -18,7 +17,6 @@ SerialBridge::SerialBridge()
     , _queuedCount(0)
     , _cachedConfig{}
     , _hasCachedConfig(false)
-    , _lastInclinationSentMs(0)
 {
 }
 
@@ -65,7 +63,6 @@ void SerialBridge::process() {
         processDisplayRxPassThrough();
         processControllerRxPassThrough();
         processPasOverride();
-        processPeriodicInclination();
     } else {
         // In CONFIG_INTERCEPT mode: middleman intercepts display queries and replies with mock data
         processDisplayRxIntercept();
@@ -352,19 +349,6 @@ void SerialBridge::processControllerRxPassThrough() {
             }
             // Still waiting for remaining event bytes, do not forward yet
             continue;
-        }
-
-        // Check if this is an ACK/response to Write Inclination (0x02 0xf4 <status> <chk>)
-        if (_controllerBufLen >= 2 && _controllerBuf[0] == REQUEST_TYPE_WRITE && _controllerBuf[1] == OPCODE_WRITE_INCLINATION) {
-            if (_controllerBufLen >= 4) {
-                if (verifyChecksum(_controllerBuf, 4)) {
-                    Telemetry.recordIntercept();
-                    Debug.trace("Inclination write ACK from controller");
-                }
-                _controllerBufLen = 0;
-                continue;
-            }
-            continue; // wait for remaining bytes
         }
 
         // Normal response handling: forward to Display
@@ -1088,45 +1072,6 @@ void SerialBridge::injectOperationMode(uint8_t mode) {
     Telemetry.updateOperationMode(mode);
 }
 
-void SerialBridge::sendInclination(float pitchDeg, float rollDeg) {
-    int16_t p = (int16_t)roundf(pitchDeg * 10.0f);
-    int16_t r = (int16_t)roundf(rollDeg * 10.0f);
-
-    uint8_t pkt[INCLINATION_FRAME_SIZE];
-    pkt[0] = REQUEST_TYPE_WRITE;
-    pkt[1] = OPCODE_WRITE_INCLINATION;
-    pkt[2] = (uint8_t)((p >> 8) & 0xFF);
-    pkt[3] = (uint8_t)(p & 0xFF);
-    pkt[4] = (uint8_t)((r >> 8) & 0xFF);
-    pkt[5] = (uint8_t)(r & 0xFF);
-    pkt[6] = computeChecksum(pkt, 6);
-
-    _controllerSerial.write(pkt, INCLINATION_FRAME_SIZE);
-    Telemetry.recordControllerTx(INCLINATION_FRAME_SIZE);
-    Debug.tracef("Inclination TX: pitch=%+.1f deg, roll=%+.1f deg", pitchDeg, rollDeg);
-}
-
-void SerialBridge::processPeriodicInclination() {
-#if MPU6050_ENABLED
-#if MPU_PITCH_BROADCAST_MS > 0
-    if (!Mpu.isPresent()) return;
-
-    uint32_t now = millis();
-    if (now - _lastInclinationSentMs < MPU_PITCH_BROADCAST_MS) return;
-
-    // Bus collision avoidance: only inject when bus is idle between display queries
-    if ((now - _lastDisplayByteMs < 25) || (now - _lastControllerByteMs < 25)) {
-        return;
-    }
-
-    _lastInclinationSentMs = now;
-    // Calibrated, not raw. The controller uses this as the road grade for its
-    // load estimate, so sending it the uncalibrated sensor angle would hand it
-    // a grade that is wrong by a constant for the life of the install.
-    sendInclination(Mpu.slopeDeg(), Mpu.leanDeg());
-#endif
-#endif
-}
 
 // =============================================================================
 // Cached config accessors (for LcdDisplay PAS curve rendering)

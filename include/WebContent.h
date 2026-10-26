@@ -6,8 +6,8 @@
 // Edits made here are silently reverted on the next build.
 //
 // source    : web/index.html
-// sha256    : 785b3cd1c3370d1451aee9ffda1716f44a4f76cfa3b7334b70de9575077cc6be
-// bytes     : 130983
+// sha256    : 9b293741dcea4529687f4a9a4b09c53d32975330125d13fd4d9c7d7163cdcd0d
+// bytes     : 127433
 
 #ifndef WEB_CONTENT_H
 #define WEB_CONTENT_H
@@ -397,36 +397,6 @@ td input[type="checkbox"] { transform: scale(1.2); accent-color: var(--accent-cy
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">IMU (MPU-6050)</span>
-          <span class="badge badge-neutral" id="val-imu-state">not fitted</span>
-        </div>
-        <div style="margin-top:8px;">
-          <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-            <span style="color:var(--text-muted)">Slope</span>
-            <strong id="val-imu-pitch">--</strong>
-          </div>
-          <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-            <span style="color:var(--text-muted)">Lean</span>
-            <strong id="val-imu-roll">--</strong>
-          </div>
-          <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-            <span style="color:var(--text-muted)">Accel X/Y/Z</span>
-            <strong id="val-imu-accel">--</strong>
-          </div>
-          <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-            <span style="color:var(--text-muted)">Gyro X/Y/Z</span>
-            <strong id="val-imu-gyro">--</strong>
-          </div>
-          <div style="display:flex; justify-content:space-between;">
-            <span style="color:var(--text-muted)">Die Temp / Rate</span>
-            <strong id="val-imu-temp">--</strong>
-          </div>
-          <div style="display:flex; justify-content:space-between; margin-top:8px;">
-            <span style="color:var(--text-muted)">Zeroed at</span>
-            <strong id="val-imu-zero" style="color:var(--text-muted); font-weight:400;">--</strong>
-          </div>
         </div>
       </div>
     </div>
@@ -1622,37 +1592,6 @@ function renderTelemetry(d) {
     const targetsState = document.getElementById('val-targets-state');
     targetsState.innerText = hasTargets ? 'live' : 'waiting';
     targetsState.className = 'badge ' + (hasTargets ? 'badge-active' : 'badge-neutral');
-
-    // IMU (MPU-6050). Everything reads '--' when no sensor answered at boot,
-    // which is the normal state on a board without one fitted.
-    const hasImu = d.hasImu === true;
-    const imuState = document.getElementById('val-imu-state');
-    imuState.innerText = hasImu ? 'live' : 'not fitted';
-    imuState.className = 'badge ' + (hasImu ? 'badge-active' : 'badge-neutral');
-
-    const num1 = (v) => Number(v).toFixed(1);
-    const num3 = (v) => Number(v).toFixed(3);
-
-    // Slope and lean are the CALIBRATED angles: the mounting bias measured
-    // during the stationary power-on calibration is already subtracted, so 0.0
-    // means the bike is level. The raw estimator output is imuPitchDeg /
-    // imuRollDeg, but showing those here would just be a constant offset the
-    // rider cannot use. There is no grade percentage anywhere -- tan(slope) is
-    // the same quantity in different clothes and runs to infinity at 90.
-    document.getElementById('val-imu-pitch').innerText = hasImu ? (num1(d.imuSlopeDeg) + ' °') : '--';
-    document.getElementById('val-imu-roll').innerText  = hasImu ? (num1(d.imuLeanDeg) + ' °') : '--';
-
-    // What the boot calibration treated as level. A value far from zero means
-    // the bike was parked on a slope at power-on, so the reading is relative to
-    // that slope -- the one thing that explains a slope figure which looks wrong.
-    document.getElementById('val-imu-zero').innerText =
-      hasImu ? (num1(d.imuSlopeZeroDeg) + ' °') : '--';
-    document.getElementById('val-imu-accel').innerText = hasImu
-      ? (num3(d.imuAx) + ' / ' + num3(d.imuAy) + ' / ' + num3(d.imuAz) + ' g') : '--';
-    document.getElementById('val-imu-gyro').innerText = hasImu
-      ? (num1(d.imuGx) + ' / ' + num1(d.imuGy) + ' / ' + num1(d.imuGz) + ' °/s') : '--';
-    document.getElementById('val-imu-temp').innerText = hasImu
-      ? (num1(d.imuTempC) + ' °C / ' + d.imuRateHz + ' Hz') : '--';
 
     const dispPill = document.getElementById('status-disp');
     dispPill.innerText = d.displayConnected ? 'Display: Live' : 'Display: Offline';
