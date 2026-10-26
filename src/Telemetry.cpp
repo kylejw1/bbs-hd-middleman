@@ -7,11 +7,14 @@ TelemetryTracker::TelemetryTracker()
     , _speedRpm(0)
     , _speedKph(0.0f)
     , _speedMph(0.0f)
-    , _batteryPercent(100)
-    , _batteryVoltage(52.0f)
+    // Zero, not a plausible-looking constant. These are only ever written by the
+    // display's queries, so with no display attached they would otherwise read as
+    // a real 52.0 V / 100 % from a battery that was never measured.
+    , _batteryPercent(0)
+    , _batteryVoltage(0.0f)
     , _motorCurrentAmps(0.0f)
     , _motorPowerWatts(0.0f)
-    , _assistLevel(1)
+    , _assistLevel(0)
     , _operationMode(0)
     , _lightsOn(false)
     , _statusCode(0)
@@ -313,6 +316,7 @@ void TelemetryTracker::buildTelemetryJson(JsonDocument& doc) {
         doc["displayConnected"] = isDisplayActive();
         doc["controllerConnected"] = isControllerActive();
 
+        xSemaphoreGive(_mutex);
     }
 }
 

@@ -832,8 +832,17 @@ class MainActivity : Activity(), BleClient.Listener {
         }
     }
 
+    private val DASH: String get() = getString(R.string.dash)
+
     private fun render(t: Telemetry) {
-        speedValue.text = number(t.speedKph, 1)
+        // Everything from the display's own queries -- speed, volts, battery,
+        // amps, assist, mode, status, lights -- is only meaningful while that
+        // display is actually polling. With it unplugged the firmware has nothing
+        // to report, and showing the last constructed value would be a reading of
+        // a battery that was never measured.
+        val displayOk = t.displayConnected
+
+        speedValue.text = if (displayOk) number(t.speedKph, 1) else getString(R.string.dash)
         // Barometric grade is dh/ds, so it is only defined while we know how fast
         // the bike is travelling; this is the distance term.
         if (::hill.isInitialized) hill.updateBikeSpeed(t.speedKph)
@@ -844,12 +853,13 @@ class MainActivity : Activity(), BleClient.Listener {
 
         cadenceValue.text = if (t.hasTargetTelemetry) number(t.cadenceRpm, 0)
                             else getString(R.string.dash)
-        pasValue.text = t.assistLevel?.toString() ?: getString(R.string.dash)
+        pasValue.text = if (displayOk) t.assistLevel?.toString() ?: getString(R.string.dash)
+                        else getString(R.string.dash)
 
-        put("power", t.powerWatts?.let { "$it" })
-        put("current", number(t.currentAmps, 1))
-        put("battery", t.batteryPercent?.let { "$it%" })
-        put("voltage", number(t.batteryVoltage, 1))
+        put("power", if (displayOk) t.powerWatts?.let { "$it" } else null)
+        put("current", if (displayOk) number(t.currentAmps, 1) else null)
+        put("battery", if (displayOk) t.batteryPercent?.let { "$it%" } else null)
+        put("voltage", if (displayOk) number(t.batteryVoltage, 1) else null)
 
         if (t.hasTargetTelemetry) {
             put("cadence", number(t.cadenceRpm, 0))
@@ -865,19 +875,22 @@ class MainActivity : Activity(), BleClient.Listener {
             }
         }
 
-        put("assist", t.assistLevel?.toString())
-        put("mode", t.operationMode)
-        put("status", t.statusCode?.let { if (it == 0) "OK" else "E$it" })
-        put("lights", if (t.lights) "ON" else "OFF")
+        put("assist", if (displayOk) t.assistLevel?.toString() else null)
+        put("mode", if (displayOk) t.operationMode else null)
+        put("status", if (displayOk) t.statusCode?.let { if (it == 0) "OK" else "E$it" } else null)
+        put("lights", if (displayOk) (if (t.lights) "ON" else "OFF") else null)
 
         lastAssist = t.assistLevel
-        assistValue.text = t.assistLevel?.toString() ?: getString(R.string.dash)
+        // The controls mirror what the display last told us; with no display that
+        // is nothing, and "0" beside a STANDARD button reads as state we know.
+        assistValue.text = if (displayOk) t.assistLevel?.toString() ?: DASH else DASH
 
         lastModeSport = t.operationMode.equals("Sport", ignoreCase = true)
-        modeButton.text = t.operationMode ?: getString(R.string.dash)
+        modeButton.text = if (displayOk) t.operationMode ?: DASH else DASH
 
         lastLights = t.lights
-        lightsButton.text = if (t.lights) "Lights ON" else "Lights OFF"
+        lightsButton.text = if (!displayOk) DASH
+                            else if (t.lights) "Lights ON" else "Lights OFF"
 
         // Re-select the curve only when the level or mode actually changed; the
         // marker moves on every push.
