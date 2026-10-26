@@ -316,20 +316,6 @@
 #define MPU_PITCH_BROADCAST_MS 500
 #endif
 
-// DEBUG: Temporarily substitute the pitch angle (degrees) in place of the
-// wheel speed reading sent to the HMI display. The display expects motor RPM
-// which it converts to km/h using wheel circumference; we back-calculate the
-// RPM that would produce a display reading equal to the pitch angle value in
-// km/h units (e.g. 15.2 degrees -> display shows 15.2 km/h).
-// Set to 0 to restore normal speed display.
-#ifndef MPU_PITCH_AS_SPEED_DISPLAY
-// Debug aid: substitutes the tilt angle for the speed the display shows, by
-// back-calculating the RPM that would render it. Left on by mistake once and it
-// read as thousands of km/h whenever the estimate ran away, because the value is
-// clamped by a uint16 RPM rather than by anything physical. Off for real use.
-#define MPU_PITCH_AS_SPEED_DISPLAY 0
-#endif
-
 // -----------------------------------------------------------------------------
 // Pitch estimator tuning -- implements bike_pitch_algorithm.md
 //
