@@ -826,11 +826,10 @@ class MainActivity : Activity(), BleClient.Listener {
         // to report, and showing the last constructed value would be a reading of
         // a battery that was never measured.
         val displayOk = t.displayConnected
-        // Speed, battery, amps and watts are measured either by a display's own
-        // queries or by this bridge polling for them, so they are valid whenever
-        // the firmware says something recent arrived. Voltage is display-only:
-        // the headless poll does not decode a voltage reply yet, so a 0.0 there
-        // would be a lie rather than a reading.
+        // Speed, voltage, battery, amps and watts are the controller's own
+        // readings, obtained either by a display's queries or by this bridge
+        // polling for them directly. They are valid whenever the firmware says
+        // one arrived recently -- a display has nothing to do with it.
         val vehicleOk = t.hasVehicleData || displayOk
 
         speedValue.text = if (vehicleOk) number(t.speedKph, 1) else getString(R.string.dash)
@@ -855,7 +854,7 @@ class MainActivity : Activity(), BleClient.Listener {
         put("power", if (vehicleOk) t.powerWatts?.let { "$it" } else null)
         put("current", if (vehicleOk) number(t.currentAmps, 1) else null)
         put("battery", if (vehicleOk) t.batteryPercent?.let { "$it%" } else null)
-        put("voltage", if (displayOk) number(t.batteryVoltage, 1) else null)
+        put("voltage", if (vehicleOk) number(t.batteryVoltage, 1) else null)
 
         if (t.hasTargetTelemetry) {
             put("cadence", number(t.cadenceRpm, 0))

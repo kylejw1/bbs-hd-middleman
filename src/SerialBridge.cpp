@@ -243,9 +243,16 @@ void SerialBridge::processHeadlessPolling() {
     // is no request to have set this otherwise.
     _lastDisplayOpcode = op;
 
-    uint8_t req[2] = { REQUEST_TYPE_BAFANG_READ, op };
-    _controllerSerial.write(req, 2);
-    Telemetry.recordControllerTx(2);
+    // 0x21 / 0x22 / 0x24 are three-byte queries: the display sends a trailing
+    // checksum and the controller ignores a two-byte form entirely, which is why
+    // asking for voltage this way returned silence rather than an error.
+    const bool extended = (op == OPCODE_DISPLAY_READ_CALORIES ||
+                           op == OPCODE_DISPLAY_READ_RANGE ||
+                           op == OPCODE_DISPLAY_READ_UNKNOWN1);
+    uint8_t req[3] = { REQUEST_TYPE_BAFANG_READ, op, (uint8_t)(REQUEST_TYPE_BAFANG_READ + op) };
+    const size_t reqLen = extended ? 3 : 2;
+    _controllerSerial.write(req, reqLen);
+    Telemetry.recordControllerTx(reqLen);
 }
 
 void SerialBridge::processPasOverride() {
