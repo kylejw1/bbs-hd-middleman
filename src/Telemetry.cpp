@@ -22,6 +22,7 @@ TelemetryTracker::TelemetryTracker()
     , _motorTempC(25)
     , _wheelSizeInch(27.5f)
     , _lastGoodSpeedKph(0.0f)
+    , _lastVehicleDataMs(0)
     , _hasTargetTelemetry(false)
     , _lastTargetTelemetryMs(0)
     , _targetCurrentPercent(0)
@@ -65,6 +66,7 @@ void TelemetryTracker::recalculateSpeed() {
         _speedMph = _speedKph * 0.621371f;
         return;
     }
+    _lastVehicleDataMs = millis();
     _lastGoodSpeedKph = _speedRpm * _wheelSizeInch * 0.00478778f;
     _speedKph = _lastGoodSpeedKph;
     _speedMph = _speedKph * 0.621371f;
@@ -89,6 +91,7 @@ void TelemetryTracker::updateCurrent(float amps) {
 void TelemetryTracker::updateBatteryPercent(uint8_t percent) {
     if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         _batteryPercent = percent;
+        _lastVehicleDataMs = millis();
         xSemaphoreGive(_mutex);
     }
 }
@@ -96,6 +99,7 @@ void TelemetryTracker::updateBatteryPercent(uint8_t percent) {
 void TelemetryTracker::updateBatteryVoltage(float volts) {
     if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         _batteryVoltage = volts;
+        _lastVehicleDataMs = millis();
         _motorPowerWatts = _motorCurrentAmps * _batteryVoltage;
         xSemaphoreGive(_mutex);
     }
@@ -313,6 +317,10 @@ void TelemetryTracker::buildTelemetryJson(JsonDocument& doc) {
         doc["motorRpm"] = serialized(String(targetFresh ? (_motorRpmX10 / 10.0f) : 0.0f, 1));
 
 
+        // True while speed/voltage/battery are actually being measured -- by a
+        // display, or by this bridge polling for them. The app uses it to decide
+        // whether a number is a reading or just an untouched zero.
+        doc["hasVehicleData"] = (millis() - _lastVehicleDataMs < 5000);
         doc["displayConnected"] = isDisplayActive();
         doc["controllerConnected"] = isControllerActive();
 

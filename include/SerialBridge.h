@@ -72,6 +72,8 @@ private:
     uint8_t  _pasOverrideLevel = 0;
     bool     _pasOverridePending = false;
     uint32_t _pasOverrideLastMs = 0;
+    uint32_t _lastPollMs = 0;
+    uint8_t  _pollIndex = 0;
     uint8_t  _writeBuf[5] = {0};
     size_t   _writeLen = 0;
     size_t   _writeExpectedLen = 0;
@@ -111,6 +113,11 @@ private:
     void forwardDisplayByte(uint8_t b);
     void flushHeldWrite();
     void processPasOverride();
+
+    // With no display on the bus nothing ever asks the controller for speed,
+    // voltage, current or battery, so those stay unknown. In that state the
+    // middleman asks on its own, one query at a time, exactly as a display would.
+    void processHeadlessPolling();
     void handleControllerPacket(const uint8_t* buf, size_t len);
     void synthesizeDisplayResponse(uint8_t opcode);
 

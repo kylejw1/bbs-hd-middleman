@@ -63,6 +63,7 @@ void SerialBridge::process() {
         processDisplayRxPassThrough();
         processControllerRxPassThrough();
         processPasOverride();
+        processHeadlessPolling();
     } else {
         // In CONFIG_INTERCEPT mode: middleman intercepts display queries and replies with mock data
         processDisplayRxIntercept();
@@ -217,6 +218,34 @@ void SerialBridge::clearPasOverride() {
     _pasOverrideActive = false;
     _pasOverridePending = false;
     _pasOverrideLastMs = 0;
+}
+
+void SerialBridge::processHeadlessPolling() {
+    // A real display owns this conversation. Polling alongside it would put two
+    // requesters on a 1200-baud bus and collide.
+    if (Telemetry.isDisplayActive()) return;
+
+    const uint32_t now = millis();
+    if (now - _lastPollMs < 250) return;
+    // Never land mid-frame: the controller needs a quiet bus to answer.
+    if (now - _lastControllerByteMs < 40) return;
+
+    _lastPollMs = now;
+    // Speed first and most often -- it is the one value that changes while riding.
+    static const uint8_t kQueries[] = {
+        OPCODE_DISPLAY_READ_SPEED, OPCODE_DISPLAY_READ_CALORIES,
+        OPCODE_DISPLAY_READ_SPEED, OPCODE_DISPLAY_READ_BATTERY,
+        OPCODE_DISPLAY_READ_SPEED, OPCODE_DISPLAY_READ_CURRENT,
+    };
+    const uint8_t op = kQueries[_pollIndex++ % (sizeof(kQueries) / sizeof(kQueries[0]))];
+
+    // Tell the response parser what it is about to receive; with no display there
+    // is no request to have set this otherwise.
+    _lastDisplayOpcode = op;
+
+    uint8_t req[2] = { REQUEST_TYPE_BAFANG_READ, op };
+    _controllerSerial.write(req, 2);
+    Telemetry.recordControllerTx(2);
 }
 
 void SerialBridge::processPasOverride() {

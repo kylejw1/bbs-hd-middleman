@@ -282,7 +282,9 @@ Two consequences worth knowing:
 
 ## The hero row
 
-Four large figures above the curve: **SLOPE**, **KM/H**, **CADENCE** and **PAS**.
+Four large figures above the curve: **SLOPE**, **KM/H**, **CADENCE** and **PAS**. The
+control row beneath is the two assist buttons and the mode button -- the level is not
+repeated between them, because it is already a hero, and there is no lights button.
 
 **SLOPE is the phone's barometric grade**, converted from percent to degrees with
 `atan` so the figure keeps the unit and the label it has always had. There is no

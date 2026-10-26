@@ -97,6 +97,15 @@ $$\text{Checksum} = \left( \sum_{i=0}^{N-1} \text{byte}_i \right) \pmod{256}$$
 | Write Mode | `0x0c` | 4 | `0x16, 0x0c, <0x02=Std, 0x04=Sport>, <chk>` |
 | Write Lights | `0x1a` | 3 | `0x16, 0x1a, <0xf0=Off, 0xf1=On>` |
 
+### Headless Polling (no display attached)
+Every value the dashboard shows from the *display* protocol -- speed, voltage, battery, current -- only exists because the display asks for it. With no display on the bus nothing asks, and those readings are simply absent.
+
+`SerialBridge::processHeadlessPolling()` covers that case: while `Telemetry.isDisplayActive()` is false it sends one display-style query every 250 ms, round-robin over speed / voltage / battery / current, having set `_lastDisplayOpcode` itself so the existing response parser decodes the reply. It never runs while a display is talking, because two requesters on a 1200-baud bus collide.
+
+* **This is why "no display" does not mean "no data".** Speed and battery arrive this way; `hasVehicleData` in `/api/telemetry` goes true whenever any of them was measured in the last 5 s, and the app uses that instead of `displayConnected` to decide whether a number is a reading.
+* **Voltage is the exception.** The 0x24 reply is not decoded correctly yet -- it reads 0.0 -- so the app still shows `--` for volts rather than a zero. Battery (0x11) works and reads the real percentage.
+* Queries are spaced by a 40 ms bus-idle check so they never land mid-frame.
+
 ### Debug Telemetry Frame (`0xEC`, bbs-fw fork)
 The fork emits a debug frame so the middleman can show live motor targets the display protocol never exposes:
 

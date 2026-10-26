@@ -85,9 +85,7 @@ class MainActivity : Activity(), BleClient.Listener {
     private lateinit var pasValue: TextView
     private lateinit var gridContainer: LinearLayout
     private lateinit var curveView: PulseCurveView
-    private lateinit var assistValue: TextView
     private lateinit var modeButton: Button
-    private lateinit var lightsButton: Button
 
     // Events
     private lateinit var eventsList: LinearLayout
@@ -118,13 +116,14 @@ class MainActivity : Activity(), BleClient.Listener {
     // tapped -- otherwise a rejected command drifts further from reality.
     private var lastAssist: Int? = null
     private var lastModeSport = false
-    private var lastLights = false
 
     // Hill assist
     private lateinit var hill: BaroGrade
     private lateinit var hillEnable: CheckBox
     private lateinit var hillGrade: TextView
     private var hillEnabled = false
+    /** True once this app has commanded a level, so the hero can show it. */
+    private var levelCommanded = false
     private var hillLevel = 1
     private var hillCandidateSince = 0L
     private var hillLastSentLevel: Int? = null
@@ -333,16 +332,13 @@ class MainActivity : Activity(), BleClient.Listener {
         pasValue = dashboard.findViewById(R.id.pasValue)
         gridContainer = dashboard.findViewById(R.id.gridContainer)
         curveView = dashboard.findViewById(R.id.curveView)
-        assistValue = dashboard.findViewById(R.id.assistValue)
         modeButton = dashboard.findViewById(R.id.modeButton)
-        lightsButton = dashboard.findViewById(R.id.lightsButton)
 
         buildGrid()
 
         dashboard.findViewById<Button>(R.id.assistUp).setOnClickListener { nudgeAssist(+1) }
         dashboard.findViewById<Button>(R.id.assistDown).setOnClickListener { nudgeAssist(-1) }
         modeButton.setOnClickListener { toggleMode() }
-        lightsButton.setOnClickListener { toggleLights() }
 
         hillEnable = dashboard.findViewById(R.id.hillEnable)
         hillGrade = dashboard.findViewById(R.id.hillGrade)
@@ -746,12 +742,14 @@ class MainActivity : Activity(), BleClient.Listener {
         // for the push would make the button feel broken, and the label is the
         // value the bike reports, so a rejected command corrects itself.
         lastAssist = target
-        assistValue.text = target.toString()
+        // Optimistic for the same reason the number is: the command demonstrably
+        // reaches the controller, but its BLE reply is sometimes lost, and hiding
+        // the level until a reply that may never come is worse than showing it.
+        levelCommanded = true
 
         ble.post("/api/cmd/pas", "{\"level\":$target}") { status, _ ->
             if (status != 200) {
                 lastAssist = current
-                assistValue.text = current.toString()
                 toast("Assist change failed (${if (status < 0) "no reply" else "$status"})")
             }
         }
@@ -772,19 +770,6 @@ class MainActivity : Activity(), BleClient.Listener {
         }
     }
 
-    private fun toggleLights() {
-        val previous = lastLights
-        lastLights = !previous
-        lightsButton.text = if (lastLights) "Lights ON" else "Lights OFF"
-
-        ble.post("/api/cmd/lights", "{\"on\":$lastLights}") { status, _ ->
-            if (status != 200) {
-                lastLights = previous
-                lightsButton.text = if (lastLights) "Lights ON" else "Lights OFF"
-                toast("Light change failed (${if (status < 0) "no reply" else "$status"})")
-            }
-        }
-    }
 
     // --- telemetry ------------------------------------------------------------
 
@@ -841,8 +826,14 @@ class MainActivity : Activity(), BleClient.Listener {
         // to report, and showing the last constructed value would be a reading of
         // a battery that was never measured.
         val displayOk = t.displayConnected
+        // Speed, battery, amps and watts are measured either by a display's own
+        // queries or by this bridge polling for them, so they are valid whenever
+        // the firmware says something recent arrived. Voltage is display-only:
+        // the headless poll does not decode a voltage reply yet, so a 0.0 there
+        // would be a lie rather than a reading.
+        val vehicleOk = t.hasVehicleData || displayOk
 
-        speedValue.text = if (displayOk) number(t.speedKph, 1) else getString(R.string.dash)
+        speedValue.text = if (vehicleOk) number(t.speedKph, 1) else getString(R.string.dash)
         // Barometric grade is dh/ds, so it is only defined while we know how fast
         // the bike is travelling; this is the distance term.
         if (::hill.isInitialized) hill.updateBikeSpeed(t.speedKph)
@@ -853,12 +844,17 @@ class MainActivity : Activity(), BleClient.Listener {
 
         cadenceValue.text = if (t.hasTargetTelemetry) number(t.cadenceRpm, 0)
                             else getString(R.string.dash)
-        pasValue.text = if (displayOk) t.assistLevel?.toString() ?: getString(R.string.dash)
+        // The level is known from a display's own writes, from a level this app
+        // commanded, or from an override it is driving. With none of those, 0
+        // would be a guess rather than a reading.
+        val levelKnown = displayOk || levelCommanded ||
+                         (hillEnabled && hillLastSentLevel != null)
+        pasValue.text = if (levelKnown) t.assistLevel?.toString() ?: getString(R.string.dash)
                         else getString(R.string.dash)
 
-        put("power", if (displayOk) t.powerWatts?.let { "$it" } else null)
-        put("current", if (displayOk) number(t.currentAmps, 1) else null)
-        put("battery", if (displayOk) t.batteryPercent?.let { "$it%" } else null)
+        put("power", if (vehicleOk) t.powerWatts?.let { "$it" } else null)
+        put("current", if (vehicleOk) number(t.currentAmps, 1) else null)
+        put("battery", if (vehicleOk) t.batteryPercent?.let { "$it%" } else null)
         put("voltage", if (displayOk) number(t.batteryVoltage, 1) else null)
 
         if (t.hasTargetTelemetry) {
@@ -883,14 +879,10 @@ class MainActivity : Activity(), BleClient.Listener {
         lastAssist = t.assistLevel
         // The controls mirror what the display last told us; with no display that
         // is nothing, and "0" beside a STANDARD button reads as state we know.
-        assistValue.text = if (displayOk) t.assistLevel?.toString() ?: DASH else DASH
 
         lastModeSport = t.operationMode.equals("Sport", ignoreCase = true)
         modeButton.text = if (displayOk) t.operationMode ?: DASH else DASH
 
-        lastLights = t.lights
-        lightsButton.text = if (!displayOk) DASH
-                            else if (t.lights) "Lights ON" else "Lights OFF"
 
         // Re-select the curve only when the level or mode actually changed; the
         // marker moves on every push.
