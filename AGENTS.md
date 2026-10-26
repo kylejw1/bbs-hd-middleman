@@ -163,7 +163,7 @@ The dashboard is normally reached over Wi-Fi, but a page loaded over **HTTPS** c
 * The symptom is identical to the ordering abort — `setup()` dies, `loop()` never runs, the display throws a communication error — so treat "bridge dead + display erroring" as a radio-initialisation problem, never a UART one.
 
 * **Stack**: Bluedroid (`BLEDevice.h`), the only BLE stack the precompiled `espressif32@6.12.0` SDK ships (`libbt.a`; there is no NimBLE library in that core). On by default via `BLE_TRANSPORT_ENABLED` in [`Config.h`](file:///home/kyle/dev/bbs-hd-middleman/include/Config.h); set it to `0` to drop roughly 600 KB flash / 30 KB RAM (measured on the S3: flash 970 KB → 1,573 KB, RAM 61 KB → 91 KB).
-* **Cost**: ~47% of the 3.19 MB app slot and ~28% of DRAM on the S3, so both OTA slots fit. Per-environment figures are in §5.
+* **Cost**: ~47% of the 3.19 MB app slot and ~28% of DRAM, so both OTA slots fit.
 * **Device name**: `BLE_DEVICE_NAME` (`BBSHD-Middleman`); the service UUID is advertised so the browser can filter on it.
 * **UUIDs and frame layout** live in [`include/BleProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/include/BleProtocol.h) and are duplicated verbatim in `web/index.html`. Change them in both places or discovery silently stops working.
 
@@ -255,7 +255,7 @@ A native Kotlin app for a phone on the handlebars: one screen of live values ove
 * **Service discovery must not depend on `onMtuChanged`.** Some stacks never deliver it even when `requestMtu()` returned true, so a 1.5 s fallback calls `discoverServices()` regardless. Discovery is guarded by a flag so a late callback cannot run it twice.
 * **Subscribing to notifications needs TWO calls, and the second one needs a value.** `setCharacteristicNotification(char, true)` only tells the local stack; the peripheral does not send anything until the client writes the CCCD (`00002902-…`) with `ENABLE_NOTIFICATION_VALUE`. `BluetoothGatt.writeDescriptor()` returns `false` outright when the descriptor's value is still null — which compiles perfectly and fails only on a real device, surfacing as *"Could not write the notification descriptor"*. The firmware side is `PROPERTY_NOTIFY` plus an explicit `BLE2902` in `BlePortal::begin()`; the comment there says it "lets the client enable notifications", which is exactly what this is. Set `cccd.value` before writing it.
 * **The PIN gate is the same one the web client uses.** The device answers exactly one request before authentication: `POST /api/auth`. A device with no PIN configured accepts `{}` and returns `pinRequired:false`, so the handshake is a no-op by default. A rejected PIN is deliberately **not** retried, because the firmware counts failures and locks the transport for 30 s after five.
-* **Stale data is shown as absent, not as a stale number.** Cadence / motor rpm / targets depend on the `0xEC` debug frame and render `--` when `hasTargetTelemetry` is false; the grade hero reads `--` until the barometer has produced a reading. The status line also names the failure — `Connected — no data for Ns` — because a frozen dashboard is precisely the failure mode this project has hit twice on the LCD.
+* **Stale data is shown as absent, not as a stale number.** Cadence / motor rpm / targets depend on the `0xEC` debug frame and render `--` when `hasTargetTelemetry` is false; the grade hero reads `--` until the barometer has produced a reading. The status line also names the failure — `Connected — no data for Ns` — because a frozen dashboard is precisely the failure mode this project has hit twice.
 * **`configChanges` on `MainActivity` is load-bearing.** The connection lives in the activity, so letting Android recreate it on rotation would drop the link — and a phone on the bars gets rotated. There is no foreground service, so backgrounding for a long time may cost the connection; reopening reconnects to the remembered MAC.
 * **Distribution is sideload-only by design.** No Play Store, account or review. **Android refuses an in-place update whose signing key changed**, so a rebuild elsewhere needs `adb uninstall com.bbshd.middleman` first. Do not commit a keystore — this repo is public.
 * **`user.home`, not `$HOME`, is what bites.** `sdkmanager` and AGP's debug-keystore lookup both resolve through Java's `user.home`; the two scripts redirect it. Details and symptoms in [`android/README.md`](file:///home/kyle/dev/bbs-hd-middleman/android/README.md).
@@ -290,7 +290,6 @@ A native Kotlin app for a phone on the handlebars: one screen of live values ove
 │   ├── ApiHandlers.h      # Transport-neutral ApiRequest/ApiResponse + route table
 │   ├── BleProtocol.h      # GATT UUIDs + BLE frame layout (mirrored in web/index.html)
 │   ├── BlePortal.h        # BLE GATT server, deferred API dispatch
-│   ├── LcdDisplay.h       # Optional TFT subsystem (ST7789 / GC9A01 targets)
 │   ├── BbsFwProtocol.h    # Opcodes, structs, bitmasks, checksums, JSON serialization
 │   ├── Telemetry.h        # Thread-safe metrics tracker & event log ring buffer
 │   ├── SerialBridge.h     # Dual UART engine, state machine, mock synthesizer
@@ -300,7 +299,6 @@ A native Kotlin app for a phone on the handlebars: one screen of live values ove
     ├── main.cpp           # Setup, cooperative loop, status LED heartbeat
     ├── ApiHandlers.cpp    # API_ROUTES table + route/query helpers
     ├── BlePortal.cpp      # Bluedroid GATT server, request reassembly, notify chunking
-    ├── LcdDisplay.cpp     # Sprite regions, PAS curve + cursor, numeric tiles
     ├── BbsFwProtocol.cpp  # JSON <-> struct converters, event log string table
     ├── Telemetry.cpp      # Metric calculations, speed math, JSON builder
     ├── SerialBridge.cpp   # Non-blocking UART streaming, arbitration logic
@@ -311,65 +309,15 @@ A native Kotlin app for a phone on the handlebars: one screen of live values ove
 
 ## 5. Build, Flash & Validation
 
-### PlatformIO Environments
-Four environments. **`default_envs` is pinned to `esp32-s3-devkitc-1`**, so a bare `pio run` only ever touches that one — without it, `pio run -t upload` would flash *every* environment in the file.
+### PlatformIO Environment
+**One environment: `esp32-s3-devkitc-1`.** The three per-panel environments (`st7789`, `gc9a01`, `gc9a01-esp32`) went with the display code — see tag `pre-removal-of-lcd-code` for the last tree that had them.
 
-Every environment compiles the BLE transport in. There is no separate BLE build: it was an `[env:ble]` variant while the coexistence abort was being chased, but that only created a way to flash the wrong image over the working firmware, so the default now lives in [`Config.h`](file:///home/kyle/dev/bbs-hd-middleman/include/Config.h) and the environment is gone.
+`default_envs` is still pinned to it: with one environment it is redundant today, but it means a future environment cannot be swept into `pio run -t upload` by accident.
 
-| Env | Command | What it is |
-| :--- | :--- | :--- |
-| `esp32-s3-devkitc-1` | `pio run -t upload` | Production. No LCD. |
-| `st7789` | `pio run -e st7789 -t upload` | 2.25" 76×284 strip, mounted landscape. |
-| `gc9a01` | `pio run -e gc9a01 -t upload` | 1.28" round 240×240, on the S3. |
-| `gc9a01-esp32` | `pio run -e gc9a01-esp32 -t upload` | 1.28" round 240×240, on a classic ESP32. |
-
-Each has its own `.pio/build/<env>` directory, so switching never risks flashing a stale artifact from another mode.
+BLE is compiled in, controlled by `BLE_TRANSPORT_ENABLED` in [`Config.h`](file:///home/kyle/dev/bbs-hd-middleman/include/Config.h) rather than by a separate environment. That variant existed while the coexistence abort was being chased and was removed because it only created a way to flash the wrong image over the working firmware.
 
 **One `setup()`/`loop()` per `src/` tree.** A standalone tool that defines its own pair needs its own environment with a `build_src_filter` that excludes it from the firmware builds, or *every* environment fails to link with `multiple definition of 'setup()'`.
 
-### Classic ESP32 ("ESP-32S" / ESP32-WROOM-32, 30-pin)
-`[env:gc9a01-esp32]` targets a classic ESP32 rather than an S3, which changes four things:
-
-* **Different chip target**: `board = esp32dev`, and the S3-only `-DARDUINO_USB_CDC_ON_BOOT` / `-DARDUINO_USB_MODE` flags are **absent**. There is no native USB on this chip — `Serial` goes out over UART0 through the on-board USB-serial bridge.
-* **4MB flash, not 8MB**: `default_8MB.csv` puts app0 at 0x10000 with size 0x330000, which runs off the end of a 4MB part, so this environment uses `min_spiffs.csv` (two 1.92MB OTA slots). Measured build is **55.1% of a slot (1,082,573 of 1,966,080 bytes)** with ~884KB spare, so OTA fits comfortably; the earlier "95.5%, no room to grow" note is obsolete. `default.csv`'s 1.31MB slots would not fit.
-* **Different LCD pins, and this is the dangerous one**: on classic ESP32, **GPIO 6–11 are the SPI flash bus**. The S3 default set (MOSI 11, CS 10, DC 9, RST 8) sits directly on top of it and will crash the chip or corrupt flash; SCLK was on GPIO12, the MTDI strapping pin that selects flash voltage. That environment remaps all five.
-* **No GPIO48**: classic GPIOs stop at 39, so the status LED moves to GPIO25.
-
-Classic ESP32 pin hazards:
-
-| Range | Hazard |
-| :--- | :--- |
-| 0, 2, 5, 12, 15 | strapping |
-| 6–11 | SPI flash bus — never use |
-| 34, 35, 36, 39 | input-only, cannot drive |
-| 1, 3 | UART0 console |
-
-GPIO16/17 are free on a WROOM but are PSRAM pins on WROVER modules. All board pins are `#ifndef`-guarded in [`Config.h`](file:///home/kyle/dev/bbs-hd-middleman/include/Config.h), so a new board is a new environment with `-D` overrides — not an edit to shared code. `-DNO_STATUS_LED` compiles the heartbeat out entirely.
-
-### Optional TFT Display (`LcdDisplay`)
-Compile-time selected by `-DLCD_DISPLAY_ST7789` or `-DLCD_DISPLAY_GC9A01`; neither defined → the class stubs to empty inline calls with zero cost. Both targets drive the same `LcdDisplay` code, differing only in geometry constants in [`include/LcdDisplay.h`](file:///home/kyle/dev/bbs-hd-middleman/include/LcdDisplay.h).
-
-* **Pins** (HSPI, 3.3 V direct — no level shifting): MOSI 11, SCLK 12, CS 10, DC 9, RST 8, backlight always-on. Free from the Bafang UARTs on 15–18. TFT_eSPI is configured entirely from `platformio.ini` build flags with `USER_SETUP_LOADED=1`, so the library's own `User_Setup.h` is bypassed; `-DTOUCH_CS=-1` exists only to suppress its "TOUCH_CS pin not defined" warning.
-* **Rendering**: three `TFT_eSprite` regions (two text rows + chart) with dirty-flag diffing, pushed only when their source values change. Refresh is gated by `LCD_REFRESH_MS` (200 ms), so the bike page repaints at most 5 Hz.
-* **A value missing from `_snapshotAndDiff()` never repaints, and the dirty terms must be per-target — the two boards show different things in the same regions.** This has bitten twice, both times because a value moved region while its dirty check did not: row 0's check was *only* 0xEC fields, so a non-0xEC value had nothing to trigger it, and then that value moved to row 1 while the check still pointed at row 0. Current mapping — **GC9A01**: row0 = target current %, target speed %; row1 = cadence, PAS level + mode. **ST7789**: row0 = cadence, mRPM, target current %, target speed %; row1 = battery, current, watts, PAS, mode. `cursorChanged` is computed from cadence and target current by name on both, because on the round target cadence is no longer in row 0. **Move a value, move its dirty term.**
-* **Sprites are 4bpp against an explicit RGB565 palette** (`LCD_PALETTE` + the `PAL_*` indices in [`LcdDisplay.h`](file:///home/kyle/dev/bbs-hd-middleman/include/LcdDisplay.h)), not TFT_eSPI's default 16bpp. That quarters sprite RAM: ~10.8 KB on ST7789 and ~17.5 KB on GC9A01, against ~21.6 KB / ~70 KB at 16bpp. Draw into a sprite with the `PAL_*` values; use `LCD_PALETTE[PAL_x]` only for the few calls that target the panel directly.
-* **Why 4bpp and not 8bpp**: TFT_eSPI's 8bpp sprites are 332 RGB with *no* palette, which quantises the dark teal curve fill (`0x0311`) to near-black. 4bpp quarters the RAM *and* keeps every colour exact; the design uses under 16 colours, so the palette costs nothing.
-* **This is load-bearing on a classic ESP32.** At 16bpp the LCD took ~70 KB and Bluedroid ~90 KB, leaving the SoftAP nothing: `WiFi.mode()` aborted in `lock_init_generic` because `xQueueCreateMutex` returned NULL. The 4bpp sprites are what leave the Wi-Fi stack enough heap, which is why `Display.begin()` still runs *before* Wi-Fi and BLE in `setup()`.
-* **GC9A01 is circular, and only the inscribed r=120 circle is visible.** A row `w` wide is fully visible only where `|y-120| <= sqrt(120² - (w/2)²)`, which for a 240 px row is true only at `y=120`. That is the constraint every region on this target is derived from — a 192 px region needs `y >= 48`, a 180 px region needs `|y-120| <= 79` — and it is why this target does not share the ST7789's four-across strip layout. **Do not "simplify" the two targets to one layout.**
-* **`_computePasCurrent()` mirrors `computePasTargetCurrent()` in [`web/index.html`](file:///home/kyle/dev/bbs-hd-middleman/web/index.html)** — it is the only place the PAS curve model is duplicated, so the two must be changed together. It must short-circuit to a flat maximum for `ASSIST_FLAG_PAS_VARIABLE` levels, exactly as the JS does.
-* Called from `loop()` only, never blocking: `_tft.init()` and sprite allocation happen once in `setup()`.
-* Init diagnostics go to `Serial.printf`, not `Debug.trace`, because tracing is off by default and these are the only boot-time evidence the panel came up.
-* **The round panel is rotated 90° clockwise via `LCD_ROTATION`.** The old comment claimed a circle needs no rotation, which confuses two different things: the *bezel* is rotation-invariant, but the *readout inside it* is not, and `LCD_ROTATION` sets which way up the rider sees it. Because 240×240 is square, W and H are unchanged and **no layout constant moves with it** — only the content turns. `LCD_ROTATION` is 0 for the ST7789 strip (which is rectangular, so there rotation genuinely does change W and H).
-* **The chart draws exactly one curve — the selected assist level.** It previously drew all ten levels with the inactive nine greyed out in `PAL_BORDER`. On a 64 px chart that was more detail than can be read at a glance and it made the one curve that matters *harder* to pick out, so `_drawCurve()` now renders a single filled curve plus a marker at the live (cadence, target current) point. The marker is a magenta vertical guide, a dotted horizontal guide at the live current, and a 5×5 core ringed in white — the ring is not decoration: `PAL_CURSOR_CLR` is close enough to `PAL_CURVE_BASE` that the core disappears into the fill without it. This change is shared with the ST7789, whose 40 px chart was just as cluttered.
-* **The GC9A01 layout is values-only: two hero figures over a text-free graph, with the two target percentages above them.** Inverted from the ST7789's tile grid:
-  * **Chart** — `192×56` at `(24, 48)`, the curve plus the rider's position marker, **no text at all**. It sits at the top of the circle now; `y >= 48` is not arbitrary, it is the point at which a 192 px-wide region is fully inside the r=120 bezel (`sqrt(120² - 96²) = 72`, so `120 - 72`).
-  * **Row 0** — `240×22` at `y=108`: target current % at `x=54`, target speed % at `x=186`. Bare values, no frame and no label.
-  * **Row 1** — `240×88` at `y=132`: **two heroes** at font 6 (48 px) against font 2's 16 — rider cadence on the left, PAS level on the right. The level carries its mode letter (`P5` / `S5`), which is a glyph rather than a label, so it stays self-describing without reintroducing titles.
-  * The frame was the grid and the label was the title; both are gone on this target. The ST7789 keeps its `_drawTile` grid — it is a 284 px strip with room for labelled tiles and does not share this layout.
-  * Font 6 is only loaded by the two GC9A01 environments (`-DLOAD_FONT6=1`). It is the Font64 face, 96 characters from ASCII 32, so `+`, `-`, `.` and the digits are all present. The ST7789 env does not load it and never calls `setTextFont(6)`.
-  * `_drawStatusLine()` is **no longer called**; the current layout has no region for it. It is kept because restoring it is one line.
-
-### PlatformIO Environment
 * **Platform**: `espressif32@6.12.0` (Use this exact version to ensure stable Xtensa toolchains).
 * **Board**: `esp32-s3-devkitc-1`
 * **Dependencies**: `bblanchon/ArduinoJson @ ^7.0.0`

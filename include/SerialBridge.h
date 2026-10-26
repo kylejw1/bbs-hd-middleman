@@ -56,16 +56,6 @@ public:
     bool isInterceptActive() const;
     uint8_t getConfigVersion() const;
 
-    // Cached config accessors (for LcdDisplay PAS curve rendering).
-    // Return sensible defaults when no config has been read yet.
-    uint8_t getConfigMaxCurrentAmps() const;
-    uint8_t getConfigPasKeepCurrentPct() const;
-    uint8_t getConfigPasKeepCurrentRpm() const;
-    // mode=0 → standard_levels, mode=1 → sport_levels; idx 0..9
-    uint8_t getLevelCurrentPct(uint8_t mode, uint8_t idx) const;
-    uint8_t getLevelCadencePct(uint8_t mode, uint8_t idx) const;
-    uint8_t getLevelFlags(uint8_t mode, uint8_t idx) const;
-
 private:
     HardwareSerial _controllerSerial;
     HardwareSerial _displaySerial;

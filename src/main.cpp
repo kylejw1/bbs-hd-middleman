@@ -6,7 +6,6 @@
 #include "WebPortal.h"
 #include "BlePortal.h"
 #include "DebugLog.h"
-#include "LcdDisplay.h"
 #include <esp_log.h>
 #include <esp_ota_ops.h>
 
@@ -78,7 +77,6 @@ void setup() {
     // Initialize optional TFT LCD display (no-op if not compiled in).
     // Runs before the I2C sensor so the display's sprite allocation gets first
     // call on the heap.
-    Display.begin();
 
 
     // Initialize dual UART serial bridge (Controller & Display)
@@ -146,7 +144,6 @@ void loop() {
     //    Ahead of the display so the panel renders the sample we just took.
 
     // 5. Update optional TFT LCD display (rate-limited; no-op if not compiled in)
-    Display.process();
 
     // 6. Heartbeat LED animation
     uint32_t now = millis();
