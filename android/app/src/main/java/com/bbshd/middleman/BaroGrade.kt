@@ -112,6 +112,26 @@ class BaroGrade(
     private var lastGrade = 0.0
 
     val available: Boolean get() = pressure != null
+
+    /** Latest barometric pressure, hPa. NaN until the first sample. */
+    var pressureHpa: Double = Double.NaN
+        private set
+
+    /**
+     * Pressure altitude relative to the 1013.25 hPa datum, in metres.
+     *
+     * This is *not* elevation above sea level: it uses a fixed reference
+     * pressure, so weather moving through shifts it by tens of metres over a
+     * day. It is stable over the seconds that grade cares about, which is all
+     * the estimator uses it for, and it is shown on the dashboard as a live sign
+     * that the barometer is working.
+     */
+    var pressureAltitudeM: Double = Double.NaN
+        private set
+
+    /** GPS Doppler speed, km/h. NaN until the first fix. */
+    var gpsSpeedKph: Double = Double.NaN
+        private set
     val usingGps: Boolean get() = gpsRunning
 
     private val gpsListener = object : LocationListener {
@@ -120,6 +140,7 @@ class BaroGrade(
             // and it is exactly the quantity a grade needs.
             if (location.hasSpeed()) {
                 gpsSpeedMps = location.speed.toDouble().coerceAtLeast(0.0)
+                gpsSpeedKph = gpsSpeedMps * 3.6
                 gpsSpeedMs = SystemClock.elapsedRealtime()
             }
         }
@@ -203,6 +224,8 @@ class BaroGrade(
         p1 = p0
         p0 = event.values[0].toDouble()
         val median = medianOfThree(p0, p1, p2)
+        pressureHpa = median
+        pressureAltitudeM = altitudeOf(median)
 
         val now = SystemClock.elapsedRealtime()
         val speed = speedMps(now)

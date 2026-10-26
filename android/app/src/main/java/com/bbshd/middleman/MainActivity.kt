@@ -147,6 +147,11 @@ class MainActivity : Activity(), BleClient.Listener {
         "mode" to "MODE",
         "status" to "STATUS",
         "lights" to "LIGHTS",
+        // The phone's own sensors, not the bike's. Kept in the same grid because
+        // they answer the same question: what is happening right now.
+        "gpsSpeed" to "GPS SPEED",
+        "pressure" to "PRESSURE",
+        "altitude" to "ALT",
     )
 
     private val ticker = object : Runnable {
@@ -156,6 +161,7 @@ class MainActivity : Activity(), BleClient.Listener {
             // sends on a level change or every 5 s, but the firmware expires the
             // override after 15 s, so the renewals have to keep coming.
             if (hillEnabled) pushHillLevel()
+            updatePhoneReadouts()
             main.postDelayed(this, 1_000)
         }
     }
@@ -204,9 +210,13 @@ class MainActivity : Activity(), BleClient.Listener {
     override fun onResume() {
         super.onResume()
         main.postDelayed(ticker, 1_000)
-        if (hillEnabled) {
+        // The barometer and GPS run whenever the dashboard is up, because they
+        // feed the readouts. Only the *commands* are gated on the checkbox.
+        if (!hillStarted) {
             hill.start()
             hillStarted = true
+        }
+        if (hillEnabled) {
             // Take the override back if we gave it up on pause.
             pushHillLevel(force = true)
         }
@@ -895,17 +905,12 @@ class MainActivity : Activity(), BleClient.Listener {
     private fun setHillEnabled(on: Boolean) {
         hillEnabled = on
         if (on) {
-            hill.start()
-            hillStarted = true
             hillLevel = BaroGrade.levelFor(0.0)
             hillCandidateSince = 0L
             pushHillLevel(force = true)
             maybeRequestLocation()
         } else {
-            hill.stop()
-            hillStarted = false
             hillCandidateSince = 0L
-            hillGrade.text = getString(R.string.dash)
             if (ble.isReady()) {
                 ble.post("/api/cmd/auto-assist", "{\"enabled\":false}")
             }
@@ -933,10 +938,16 @@ class MainActivity : Activity(), BleClient.Listener {
         // The sensor runs at ~50 Hz; the label only needs 10.
         if (now - hillUiLastMs >= 100) {
             hillUiLastMs = now
-            hillGrade.text = String.format(
-                Locale.US, "%s%.1f%%  L%d", if (grade >= 0) "+" else "", grade, hillLevel
-            )
+            hillGrade.text = if (hillEnabled) {
+                String.format(Locale.US, "%s%.1f%%  L%d", if (grade >= 0) "+" else "", grade, hillLevel)
+            } else {
+                // No level while the feature is off, or "L4" would read as though
+                // the bike were in it.
+                String.format(Locale.US, "%s%.1f%%", if (grade >= 0) "+" else "", grade)
+            }
         }
+
+        if (!hillEnabled) return
 
         val raw = BaroGrade.levelFor(grade)
         if (raw == hillLevel) {
@@ -1011,6 +1022,13 @@ class MainActivity : Activity(), BleClient.Listener {
         curveView.setCurve(
             PasCurve.parameters(config, curveSport ?: false, curveLevel ?: 0)
         )
+    }
+
+    private fun updatePhoneReadouts() {
+        if (!::hill.isInitialized) return
+        put("gpsSpeed", number(hill.gpsSpeedKph, 1))
+        put("pressure", number(hill.pressureHpa, 2))
+        put("altitude", number(hill.pressureAltitudeM, 0))
     }
 
     private fun put(key: String, value: String?) {

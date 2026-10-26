@@ -279,6 +279,30 @@ Two consequences worth knowing:
   override and the display gets control back. Without that the bike would be stuck at
   the last commanded level with dead buttons.
 
+## Phone sensors on the dashboard
+
+Three cells in the same grid as the bike values, fed by the phone rather than the
+controller:
+
+| Cell | Source | Notes |
+| --- | --- | --- |
+| **GPS SPEED** | GPS Doppler speed | `--` until the first fix, and until location permission is granted |
+| **PRESSURE** | Barometer | Two decimals, because that is where the movement is |
+| **ALT** | Barometer | Pressure altitude, not elevation — see below |
+
+**These run whenever the dashboard is on screen, even with hill assist off.** The
+checkbox gates the *commands*, not the sensors; a rider checking whether the
+barometer is alive should not have to arm auto-assist to find out. They stop in
+`onPause` and resume with the screen, so a backgrounded app is not polling GPS.
+
+**ALT is pressure altitude, not your elevation.** It is computed against the fixed
+1013.25 hPa standard datum, so a weather system moving through shifts it by tens of
+metres over a day, and it will not match a map or GPS elevation. It is stable over
+the seconds a grade cares about, which is all the estimator needs, and it is on the
+dashboard as a live sign the barometer is working rather than as a navigation
+instrument. The phone here reads about 968 m, consistent with roughly 1000 m of
+real elevation, but do not read it as a surveyed height.
+
 ## Hill assist (barometric grade)
 
 A checkbox on the Dashboard. When on, the app measures road grade and commands an
