@@ -39,6 +39,7 @@ public:
     float getCachedBaroTempC() const;
     float getCachedBaroAltitudeM() const;
     float getCachedSlopePercent() const;
+    float getCachedSlopeMultiplier() const;
     bool  hasBaro() const;
     void updateOperationMode(uint8_t mode);
     void updateLights(bool on);
@@ -115,6 +116,7 @@ private:
     float    _baroTempC;
     float    _baroAltitudeM;
     float    _slopePercent;
+    float    _slopeMultiplier;
     uint32_t _lastBaroMs;
     uint32_t _lastVehicleDataMs;
 

@@ -26,6 +26,7 @@ TelemetryTracker::TelemetryTracker()
     , _baroTempC(0.0f)
     , _baroAltitudeM(0.0f)
     , _slopePercent(0.0f)
+    , _slopeMultiplier(1.0f)
     , _lastBaroMs(0)
     , _lastVehicleDataMs(0)
     , _hasTargetTelemetry(false)
@@ -123,6 +124,10 @@ void TelemetryTracker::updateBaro(float pressureHpa, float temperatureC, float a
 void TelemetryTracker::updateSlopePercent(float percent) {
     if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         _slopePercent = percent;
+        // 1 + slope% x 5, with slope as a percentage: 5 % grade -> 1.25x,
+        // 10 % -> 1.5x. Clamped so a bad reading cannot demand 16x or a negative
+        // multiplier. Computed here so every client agrees on the number.
+        _slopeMultiplier = constrain(1.0f + percent * 0.05f, 0.5f, 3.0f);
         xSemaphoreGive(_mutex);
     }
 }
@@ -131,6 +136,7 @@ float TelemetryTracker::getCachedPressureHpa() const { return _baroPressureHpa; 
 float TelemetryTracker::getCachedBaroTempC() const { return _baroTempC; }
 float TelemetryTracker::getCachedBaroAltitudeM() const { return _baroAltitudeM; }
 float TelemetryTracker::getCachedSlopePercent() const { return _slopePercent; }
+float TelemetryTracker::getCachedSlopeMultiplier() const { return _slopeMultiplier; }
 bool  TelemetryTracker::hasBaro() const { return _lastBaroMs != 0 && (millis() - _lastBaroMs < 3000); }
 
 void TelemetryTracker::updateAssistLevel(uint8_t level) {
@@ -361,6 +367,9 @@ void TelemetryTracker::buildTelemetryJson(JsonDocument& doc) {
         doc["baroTempC"] = serialized(String(baroOk ? _baroTempC : 0.0f, 1));
         doc["baroAltitudeM"] = serialized(String(baroOk ? _baroAltitudeM : 0.0f, 1));
         doc["slopePercent"] = serialized(String(baroOk ? _slopePercent : 0.0f, 2));
+        // The multiplier the slope implies, 1 + slope% x 5. Published, not acted
+        // on: this build never changes the assist level.
+        doc["slopeMultiplier"] = serialized(String(baroOk ? _slopeMultiplier : 1.0f, 3));
 
         doc["hasVehicleData"] = (millis() - _lastVehicleDataMs < 5000);
         doc["displayConnected"] = isDisplayActive();

@@ -889,7 +889,12 @@ class MainActivity : Activity(), BleClient.Listener {
         // itself runs at the barometer's rate.
         if (now - hillUiLastMs >= 100) {
             hillUiLastMs = now
-            hillGrade.text = String.format(Locale.US, "%s%.1f%%", if (grade >= 0) "+" else "", grade)
+            // 1 + slope% x 5, the same formula the firmware publishes, so a bike
+            // without the barometer still shows the number the sensor would give.
+            val mult = (1.0 + grade * 0.05).coerceIn(0.5, 3.0)
+            hillGrade.text = String.format(
+                Locale.US, "%s%.1f%%   x%.2f", if (grade >= 0) "+" else "", grade, mult
+            )
         }
     }
 
