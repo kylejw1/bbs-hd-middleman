@@ -114,6 +114,7 @@ class MainActivity : Activity(), BleClient.Listener {
     // to start from what the bike actually reported, not from what was last
     // tapped -- otherwise a rejected command drifts further from reality.
     private var lastAssist: Int? = null
+    private var lastTelemetry: Telemetry? = null
 
     // Hill assist
     private lateinit var hill: BaroGrade
@@ -807,6 +808,7 @@ class MainActivity : Activity(), BleClient.Listener {
     private val DASH: String get() = getString(R.string.dash)
 
     private fun render(t: Telemetry) {
+        lastTelemetry = t
         // Everything from the display's own queries -- speed, volts, battery,
         // amps, assist, mode, status, lights -- is only meaningful while that
         // display is actually polling. With it unplugged the firmware has nothing
@@ -824,9 +826,14 @@ class MainActivity : Activity(), BleClient.Listener {
         // the bike is travelling; this is the distance term.
         if (::hill.isInitialized) hill.updateBikeSpeed(t.speedKph)
 
-        // Grade comes from the phone's barometer and the bike's wheel speed: the
-        // middleman has no IMU, by design.
-        showPhoneGrade()
+        // Grade: if the middleman has a DPS310 it measures the slope itself, from
+        // its own pressure and the wheel speed -- the phone is then only a display.
+        // Without one, fall back to the handset's barometer.
+        if (t.hasBaro) {
+            showSlopeDegrees(Math.toDegrees(atan((t.slopePercent ?: 0.0) / 100.0)))
+        } else {
+            showPhoneGrade()
+        }
 
         cadenceValue.text = if (t.hasTargetTelemetry) number(t.cadenceRpm, 0)
                             else getString(R.string.dash)
@@ -1051,8 +1058,13 @@ class MainActivity : Activity(), BleClient.Listener {
     private fun updatePhoneReadouts() {
         if (!::hill.isInitialized) return
         put("gpsSpeed", number(hill.gpsSpeedKph, 1))
-        put("pressure", number(hill.pressureHpa, 2))
-        put("altitude", number(hill.pressureAltitudeM, 0))
+
+        // The bike's DPS310 if it has one, otherwise the handset's barometer.
+        val fromBike = lastTelemetry?.hasBaro == true
+        val pressure = if (fromBike) lastTelemetry?.baroPressureHpa else hill.pressureHpa
+        val altitude = if (fromBike) lastTelemetry?.baroAltitudeM else hill.pressureAltitudeM
+        put("pressure", number(pressure, 2))
+        put("altitude", number(altitude, 0))
     }
 
     private fun put(key: String, value: String?) {

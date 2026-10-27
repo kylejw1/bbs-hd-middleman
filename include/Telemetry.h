@@ -30,6 +30,16 @@ public:
     void updateBatteryPercent(uint8_t percent);
     void updateBatteryVoltage(float volts);
     void updateAssistLevel(uint8_t level);
+
+    // Barometric pressure from the on-board DPS310, and the grade derived from it
+    // against wheel speed.
+    void updateBaro(float pressureHpa, float temperatureC, float altitudeM);
+    void updateSlopePercent(float percent);
+    float getCachedPressureHpa() const;
+    float getCachedBaroTempC() const;
+    float getCachedBaroAltitudeM() const;
+    float getCachedSlopePercent() const;
+    bool  hasBaro() const;
     void updateOperationMode(uint8_t mode);
     void updateLights(bool on);
     void updateStatusCode(uint8_t code);
@@ -58,6 +68,7 @@ public:
     uint8_t getCachedStatusCode() const;
     uint8_t getCachedBatteryPercent() const;
     uint16_t getCachedSpeedRpm() const;
+    float    getCachedSpeedKph() const;
     float getCachedCurrentAmps() const;
     float getCachedVoltage() const;
     uint8_t getCachedAssistLevel() const;
@@ -99,6 +110,12 @@ private:
     int8_t _motorTempC;
     float _wheelSizeInch;
     float _lastGoodSpeedKph;
+
+    float    _baroPressureHpa;
+    float    _baroTempC;
+    float    _baroAltitudeM;
+    float    _slopePercent;
+    uint32_t _lastBaroMs;
     uint32_t _lastVehicleDataMs;
 
     // Live bbs-fw motor targets (from the 0xEC debug telemetry frame)

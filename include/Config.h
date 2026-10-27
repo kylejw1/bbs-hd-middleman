@@ -164,4 +164,29 @@
 #define BLE_AUTH_MAX_ATTEMPTS   5
 #define BLE_AUTH_LOCKOUT_MS     30000
 
+// =============================================================================
+// DPS310 BAROMETRIC PRESSURE (I2C)
+// =============================================================================
+// The slope is dh/ds. Measuring it on the bike rather than in the phone means
+// the same air the wheels are in, and a reading that outlives the handset.
+//
+// Pins: 13/14. They were the MPU-6050's I2C pair before that driver was removed,
+// so this is a bus that is already known to work on this board, and both pins are
+// clear of the SPI flash (6..11), the strapping pins (0/3/45/46) and the Bafang
+// UARTs (15..18). The LCD's pins 8..12 are free now too, but there is no reason
+// to prefer them.
+#ifndef DPS310_ENABLED
+#define DPS310_ENABLED      1
+#endif
+
+#ifndef DPS310_SDA_PIN
+#define DPS310_SDA_PIN      13
+#endif
+#ifndef DPS310_SCL_PIN
+#define DPS310_SCL_PIN      14
+#endif
+#ifndef DPS310_I2C_HZ
+#define DPS310_I2C_HZ       400000
+#endif
+
 #endif // CONFIG_H

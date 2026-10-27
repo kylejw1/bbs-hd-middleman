@@ -22,6 +22,11 @@ TelemetryTracker::TelemetryTracker()
     , _motorTempC(25)
     , _wheelSizeInch(27.5f)
     , _lastGoodSpeedKph(0.0f)
+    , _baroPressureHpa(0.0f)
+    , _baroTempC(0.0f)
+    , _baroAltitudeM(0.0f)
+    , _slopePercent(0.0f)
+    , _lastBaroMs(0)
     , _lastVehicleDataMs(0)
     , _hasTargetTelemetry(false)
     , _lastTargetTelemetryMs(0)
@@ -104,6 +109,29 @@ void TelemetryTracker::updateBatteryVoltage(float volts) {
         xSemaphoreGive(_mutex);
     }
 }
+
+void TelemetryTracker::updateBaro(float pressureHpa, float temperatureC, float altitudeM) {
+    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        _baroPressureHpa = pressureHpa;
+        _baroTempC = temperatureC;
+        _baroAltitudeM = altitudeM;
+        _lastBaroMs = millis();
+        xSemaphoreGive(_mutex);
+    }
+}
+
+void TelemetryTracker::updateSlopePercent(float percent) {
+    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        _slopePercent = percent;
+        xSemaphoreGive(_mutex);
+    }
+}
+
+float TelemetryTracker::getCachedPressureHpa() const { return _baroPressureHpa; }
+float TelemetryTracker::getCachedBaroTempC() const { return _baroTempC; }
+float TelemetryTracker::getCachedBaroAltitudeM() const { return _baroAltitudeM; }
+float TelemetryTracker::getCachedSlopePercent() const { return _slopePercent; }
+bool  TelemetryTracker::hasBaro() const { return _lastBaroMs != 0 && (millis() - _lastBaroMs < 3000); }
 
 void TelemetryTracker::updateAssistLevel(uint8_t level) {
     if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -239,6 +267,10 @@ uint16_t TelemetryTracker::getCachedSpeedRpm() const {
     return _speedRpm;
 }
 
+float TelemetryTracker::getCachedSpeedKph() const {
+    return _speedKph;
+}
+
 float TelemetryTracker::getCachedCurrentAmps() const {
     return _motorCurrentAmps;
 }
@@ -320,6 +352,16 @@ void TelemetryTracker::buildTelemetryJson(JsonDocument& doc) {
         // True while speed/voltage/battery are actually being measured -- by a
         // display, or by this bridge polling for them. The app uses it to decide
         // whether a number is a reading or just an untouched zero.
+        // On-bike barometer: pressure, temperature, and the grade the middleman
+        // derives from it and the wheel speed. Absent (0 / false) when no DPS310
+        // answered, so a client can tell "no sensor" from "sea level".
+        const bool baroOk = (_lastBaroMs != 0 && (millis() - _lastBaroMs < 3000));
+        doc["hasBaro"] = baroOk;
+        doc["baroPressureHpa"] = serialized(String(baroOk ? _baroPressureHpa : 0.0f, 2));
+        doc["baroTempC"] = serialized(String(baroOk ? _baroTempC : 0.0f, 1));
+        doc["baroAltitudeM"] = serialized(String(baroOk ? _baroAltitudeM : 0.0f, 1));
+        doc["slopePercent"] = serialized(String(baroOk ? _slopePercent : 0.0f, 2));
+
         doc["hasVehicleData"] = (millis() - _lastVehicleDataMs < 5000);
         doc["displayConnected"] = isDisplayActive();
         doc["controllerConnected"] = isControllerActive();

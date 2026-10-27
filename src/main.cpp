@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "Config.h"
+#include "Dps310.h"
 #include "BbsFwProtocol.h"
 #include "Telemetry.h"
 #include "SerialBridge.h"
@@ -82,6 +83,9 @@ void setup() {
     // Initialize dual UART serial bridge (Controller & Display)
     Bridge.begin();
 
+    // Optional: absent is a supported state, exactly as the MPU-6050 was.
+    Baro.begin();
+
     #if BLE_TRANSPORT_ENABLED
     // Bluetooth MUST be enabled before Wi-Fi.
     //
@@ -132,6 +136,7 @@ void setup() {
 void loop() {
     // 1. Process dual serial bridge (transparent pass-through & keep-alive synthesizer)
     Bridge.process();
+    Baro.process();
 
     // 2. Process web server and DNS captive portal
     Portal.process();
