@@ -149,13 +149,6 @@
             android:orientation="horizontal"
             android:paddingTop="2dp">
 
-            <CheckBox
-                android:id="@+id/hillEnable"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:minWidth="0dp"
-                android:text="HILL ASSIST"
-                android:textSize="12sp" />
 
             <TextView
                 android:id="@+id/hillGrade"

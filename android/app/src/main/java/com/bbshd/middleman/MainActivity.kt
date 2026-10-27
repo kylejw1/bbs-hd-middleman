@@ -118,17 +118,10 @@ class MainActivity : Activity(), BleClient.Listener {
 
     // Hill assist
     private lateinit var hill: BaroGrade
-    private lateinit var hillEnable: CheckBox
     private lateinit var hillGrade: TextView
-    private var hillEnabled = false
     /** True once this app has commanded a level, so the hero can show it. */
-    private var levelCommanded = false
     /** Which level table the curve draws from; the mode is read, not switched. */
     private var lastModeSport = false
-    private var hillLevel = 1
-    private var hillCandidateSince = 0L
-    private var hillLastSentLevel: Int? = null
-    private var hillLastSendMs = 0L
     private var hillUiLastMs = 0L
     private var hillStarted = false
 
@@ -158,10 +151,6 @@ class MainActivity : Activity(), BleClient.Listener {
     private val ticker = object : Runnable {
         override fun run() {
             updateStatusLine()
-            // Doubles as the override heartbeat: pushHillLevel() only actually
-            // sends on a level change or every 5 s, but the firmware expires the
-            // override after 15 s, so the renewals have to keep coming.
-            if (hillEnabled) pushHillLevel()
             updatePhoneReadouts()
             main.postDelayed(this, 1_000)
         }
@@ -217,10 +206,6 @@ class MainActivity : Activity(), BleClient.Listener {
             hill.start()
             hillStarted = true
         }
-        if (hillEnabled) {
-            // Take the override back if we gave it up on pause.
-            pushHillLevel(force = true)
-        }
     }
 
     override fun onPause() {
@@ -234,12 +219,6 @@ class MainActivity : Activity(), BleClient.Listener {
         if (hillStarted) {
             hill.stop()
             hillStarted = false
-        }
-        // Hand control back rather than leaving the bike overridden while the app
-        // is in the background. It would expire on its own, but not immediately.
-        if (hillEnabled && ble.isReady()) {
-            ble.post("/api/cmd/auto-assist", "{\"enabled\":false}")
-            hillLastSentLevel = null
         }
     }
 
@@ -339,17 +318,12 @@ class MainActivity : Activity(), BleClient.Listener {
         dashboard.findViewById<Button>(R.id.assistUp).setOnClickListener { nudgeAssist(+1) }
         dashboard.findViewById<Button>(R.id.assistDown).setOnClickListener { nudgeAssist(-1) }
 
-        hillEnable = dashboard.findViewById(R.id.hillEnable)
         hillGrade = dashboard.findViewById(R.id.hillGrade)
 
+        // Grade is measured and displayed. Nothing in this version acts on it:
+        // the only command the controller accepts is a PAS level, and this build
+        // deliberately never sends one on its own.
         hill = BaroGrade(this) { grade -> onGrade(grade) }
-        if (!hill.available) {
-            // No barometer, no distance-based grade. Say which, rather than
-            // leaving a checkbox that silently does nothing.
-            hillEnable.isEnabled = false
-            hillEnable.text = "HILL ASSIST (no barometer)"
-        }
-        hillEnable.setOnCheckedChangeListener { _, checked -> setHillEnabled(checked) }
 
         eventsList = screens[SCREEN_EVENTS].findViewById(R.id.eventsList)
         renderEvents()
@@ -694,7 +668,6 @@ class MainActivity : Activity(), BleClient.Listener {
             // The curve needs the level parameters, which only /api/config carries.
             // One read per connection; it costs about a second of bridge time.
             fetchCurveConfig()
-            if (hillEnabled) pushHillLevel(force = true)
         }
         if (state == BleClient.State.FAILED) {
             toast(detail)
@@ -741,10 +714,6 @@ class MainActivity : Activity(), BleClient.Listener {
         // for the push would make the button feel broken, and the label is the
         // value the bike reports, so a rejected command corrects itself.
         lastAssist = target
-        // Optimistic for the same reason the number is: the command demonstrably
-        // reaches the controller, but its BLE reply is sometimes lost, and hiding
-        // the level until a reply that may never come is worse than showing it.
-        levelCommanded = true
 
         ble.post("/api/cmd/pas", "{\"level\":$target}") { status, _ ->
             // Revert only on a real error status. A timeout usually means the
@@ -899,22 +868,6 @@ class MainActivity : Activity(), BleClient.Listener {
      */
     // --- hill assist ----------------------------------------------------------
 
-    private fun setHillEnabled(on: Boolean) {
-        hillEnabled = on
-        if (on) {
-            hillLevel = BaroGrade.levelFor(0.0)
-            hillCandidateSince = 0L
-            pushHillLevel(force = true)
-            maybeRequestLocation()
-        } else {
-            hillCandidateSince = 0L
-            if (ble.isReady()) {
-                ble.post("/api/cmd/auto-assist", "{\"enabled\":false}")
-            }
-            hillLastSentLevel = null
-        }
-    }
-
     private fun maybeRequestLocation() {
         // GPS is only a fallback for the bike's own speed sensor, so the feature
         // works without it; the permission buys coasting and GPS-only rides.
@@ -932,73 +885,11 @@ class MainActivity : Activity(), BleClient.Listener {
     private fun onGrade(grade: Double) {
         val now = SystemClock.elapsedRealtime()
 
-        // The sensor runs at ~50 Hz; the label only needs 10.
+        // 10 Hz is plenty for a label the eye reads at a glance; the estimator
+        // itself runs at the barometer's rate.
         if (now - hillUiLastMs >= 100) {
             hillUiLastMs = now
-            showPhoneGrade()
-
-            hillGrade.text = if (hillEnabled) {
-                String.format(Locale.US, "%s%.1f%%  L%d", if (grade >= 0) "+" else "", grade, hillLevel)
-            } else {
-                // No level while the feature is off, or "L4" would read as though
-                // the bike were in it.
-                String.format(Locale.US, "%s%.1f%%", if (grade >= 0) "+" else "", grade)
-            }
-        }
-
-        if (!hillEnabled) return
-
-        val raw = BaroGrade.levelFor(grade)
-        if (raw == hillLevel) {
-            hillCandidateSince = 0L
-            return
-        }
-
-        // Hysteresis, or the level chatters at every band boundary. Going up we
-        // want to be well into the new band; going down, well below the old one.
-        // 0.6 % is over half a band, so a reading that merely wobbles around a
-        // boundary cannot move a level in either direction.
-        val margin = 0.6
-        val inside = if (raw > hillLevel) {
-            grade >= (raw - 1) + margin
-        } else {
-            grade <= raw - margin
-        }
-        if (!inside) {
-            hillCandidateSince = 0L
-            return
-        }
-
-        // And a dwell: the grade has to stay in the new band for three seconds
-        // before the level follows, so a pothole, a dip in the road or one noisy
-        // barometer sample cannot change gear.
-        if (hillCandidateSince == 0L) {
-            hillCandidateSince = now
-            return
-        }
-        if (now - hillCandidateSince < 3_000) return
-
-        hillLevel = raw
-        hillCandidateSince = 0L
-        pushHillLevel()
-    }
-
-    private fun pushHillLevel(force: Boolean = false) {
-        if (!hillEnabled || !ble.isReady()) return
-
-        val now = SystemClock.elapsedRealtime()
-        if (!force && hillLastSentLevel == hillLevel && now - hillLastSendMs < 5_000) return
-
-        hillLastSentLevel = hillLevel
-        hillLastSendMs = now
-        ble.post("/api/cmd/auto-assist", "{\"enabled\":true,\"level\":$hillLevel}") { status, _ ->
-            // A timeout is not a failure: the command demonstrably reaches the
-            // controller and it is the *reply* that gets dropped when the radio
-            // is busy. The next telemetry push shows the true level within a
-            // second, so reporting this as an error was pure noise.
-            if (status in 1..Int.MAX_VALUE && status != 200 && !hillEnabled) {
-                toast("Hill assist rejected ($status)")
-            }
+            hillGrade.text = String.format(Locale.US, "%s%.1f%%", if (grade >= 0) "+" else "", grade)
         }
     }
 
@@ -1042,10 +933,6 @@ class MainActivity : Activity(), BleClient.Listener {
         slopeValue.setTextColor(color(if (steep) R.color.warn else R.color.accent))
     }
 
-    /**
-     * The phone measures grade as a percentage; the hero is in degrees, and one
-     * unit across both sources beats two numbers that look comparable and are not.
-     */
     private fun showPhoneGrade() {
         if (!::hill.isInitialized) {
             slopeValue.text = getString(R.string.dash)
