@@ -111,6 +111,18 @@ static bool readCoefficients() {
     return any;
 }
 
+// List every device answering on the bus. When nothing is found this is the
+// difference between "wrong pins", "wrong address" and "not powered".
+static void scanBus() {
+    Serial.print("  scan:");
+    int found = 0;
+    for (uint8_t a = 0x08; a < 0x78; a++) {
+        Wire.beginTransmission(a);
+        if (Wire.endTransmission() == 0) { Serial.printf(" 0x%02X", a); found++; }
+    }
+    Serial.println(found ? "" : " (nothing responded)");
+}
+
 static bool probe() {
     const uint8_t candidates[2] = { 0x77, 0x76 };
     for (uint8_t a : candidates) {
@@ -130,13 +142,30 @@ void setup() {
     delay(1200);   // let the USB-serial side attach before the banner
     Serial.println();
     Serial.println("=== DPS310 bench test ===");
-    Serial.printf("I2C: SDA %d (SDI), SCL %d (SCK), %u Hz\n", PIN_SDA, PIN_SCL, I2C_HZ);
+    Serial.printf("configured: SDA %d (SDI), SCL %d (SCK), %u Hz\n", PIN_SDA, PIN_SCL, I2C_HZ);
 
-    Wire.begin(PIN_SDA, PIN_SCL, I2C_HZ);
-    Wire.setTimeOut(20);
+    // The breakout may label the lines SDI/SCK or SDA/SCL, and those two
+    // conventions disagree about which pin is which. Rather than guess, try both
+    // orders and report which one has a bus on it.
+    bool ok = false;
+    for (int attempt = 0; attempt < 2 && !ok; attempt++) {
+        const int sda = (attempt == 0) ? PIN_SDA : PIN_SCL;
+        const int scl = (attempt == 0) ? PIN_SCL : PIN_SDA;
+        if (attempt == 1) Serial.println("  retrying with SDA/SCL swapped");
+        Serial.printf("I2C on SDA %d, SCL %d\n", sda, scl);
 
-    if (!probe()) {
-        Serial.println("!! no DPS310 found on 0x77 or 0x76 — check SDA/SCL and power");
+        Wire.end();
+        Wire.begin(sda, scl, I2C_HZ);
+        Wire.setTimeOut(20);
+        delay(20);
+
+        scanBus();
+        if (probe()) { ok = true; break; }
+    }
+
+    if (!ok) {
+        Serial.println("!! no DPS310 on either pin order — check 3V3, GND and the jumpers");
+        Serial.println("   (the scan above lists anything that did answer)");
         while (true) delay(1000);
     }
 
@@ -180,30 +209,50 @@ void loop() {
         return;
     }
 
-    // Wait for a genuinely new result: PRS_RDY (bit 4) and TMP_RDY (bit 5).
-    if (!(status & 0x10) || !(status & 0x20)) {
+    // PRS_RDY (bit 4) governs: gating on TMP_RDY as well throttled the whole loop
+    // to the 1 Hz temperature rate, which is why a 4 Hz mode read at 1 Hz.
+    if (!(status & 0x10)) {
         delay(2);
         return;
     }
 
-    uint8_t p[3], t[3];
-    if (!readRegs(REG_PSR_B2, p, 3) || !readRegs(REG_TMP_B2, t, 3)) {
-        Serial.println("!! data read failed");
+    uint8_t p[3];
+    if (!readRegs(REG_PSR_B2, p, 3)) {
+        Serial.println("!! pressure read failed");
         delay(100);
         return;
     }
-
     const int32_t pRaw = signExtend(((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2], 24);
-    const int32_t tRaw = signExtend(((uint32_t)t[0] << 16) | ((uint32_t)t[1] << 8) | t[2], 24);
+
+    // Temperature only when the part says it has a new one; otherwise reuse the
+    // last scaled value, which is what the compensation needs.
+    static int32_t tRaw = 0;
+    static bool haveTemp = false;
+    if (status & 0x20) {
+        uint8_t t[3];
+        if (readRegs(REG_TMP_B2, t, 3)) {
+            tRaw = signExtend(((uint32_t)t[0] << 16) | ((uint32_t)t[1] << 8) | t[2], 24);
+            haveTemp = true;
+        }
+    }
+
+    // Before the first temperature conversion the coefficient set is incomplete
+    // and the compensated pressure is meaningless (it read 911 hPa instead of
+    // 896). Skip until there is a real temperature to compensate against.
+    if (!haveTemp) return;
 
     // Compensation, datasheet form.
     const float tScaled = (float)tRaw / kScale[TMP_OSR];
     lastTempScaled = (float)c0Half + (float)c1 * tScaled;
 
     const float pScaled = (float)pRaw / kScale[PRS_OSR];
-    const float pressure = (float)c00
+    // The compensated result is in PASCALS, not hectopascals. 89530 here is
+    // 895.3 hPa -- correct for this altitude -- and treating it as hPa made the
+    // altitude and slope maths nonsense by a factor of a hundred.
+    const float pressurePa = (float)c00
                          + pScaled * ((float)c10 + pScaled * ((float)c20 + pScaled * (float)c30))
-                         + tScaled * ((float)c01 + pScaled * ((float)c11 + pScaled * (float)c21));
+                           + tScaled * ((float)c01 + pScaled * ((float)c11 + pScaled * (float)c21));
+    const float pressure = pressurePa / 100.0f;   // hPa
 
     static uint32_t lastMs = 0;
     const uint32_t now = millis();
