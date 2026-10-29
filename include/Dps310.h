@@ -50,6 +50,8 @@ private:
     bool    readRegisters(uint8_t reg, uint8_t* buf, size_t len);
     bool    writeRegister(uint8_t reg, uint8_t value);
     int32_t readRaw(int32_t* temperatureRaw);
+    bool    _haveTemp = false;
+    int32_t _lastTempRaw = 0;
     float   compensatePressure(int32_t pRaw, int32_t tRaw);
 
     bool     _present = false;

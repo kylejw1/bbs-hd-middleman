@@ -121,14 +121,22 @@ void Dps310::process() {
     const int32_t pRaw = readRaw(&tRaw);
     if (pRaw == INT32_MIN) return;   // not ready yet
 
-    const float pressure = compensatePressure(pRaw, tRaw);
-    // Plausibility: a bike is never at 300 hPa or 1100 hPa, and a failed I2C
-    // read produces exactly those extremes.
-    if (pressure < 300.0f || pressure > 1100.0f) return;
+    // The compensated result is in PASCALS. 89530 is 895.3 hPa -- correct for a
+    // bike at about 1000 m -- and the bench test proved that treating it as hPa
+    // puts altitude and slope out by a factor of a hundred.
+    const float pressureHpa = compensatePressure(pRaw, tRaw) / 100.0f;
 
-    _sample.pressureHpa = pressure;
-    _sample.temperatureC = _lastTempScaled;   // compensated below, see calcTemp
-    _sample.altitudeM = 44330.0f * (1.0f - powf(pressure / 1013.25f, 1.0f / 5.255f));
+    // Plausibility: a bike is never above Everest or below a vacuum chamber, and
+    // a failed I2C read produces exactly those extremes.
+    if (pressureHpa < 300.0f || pressureHpa > 1100.0f) return;
+
+    // Nothing is trustworthy before the first temperature conversion, because the
+    // coefficient set is incomplete and the pressure is off by several hPa.
+    if (!_haveTemp) return;
+
+    _sample.pressureHpa = pressureHpa;
+    _sample.temperatureC = _lastTempScaled;
+    _sample.altitudeM = 44330.0f * (1.0f - powf(pressureHpa / 1013.25f, 1.0f / 5.255f));
 
     if (_lastSampleMs != 0) {
         const float dt = (now - _lastSampleMs) / 1000.0f;
@@ -294,16 +302,27 @@ bool Dps310::readCoefficients() {
 int32_t Dps310::readRaw(int32_t* temperatureRaw) {
     uint8_t status = 0;
     if (!readRegisters(REG_MEAS_CFG, &status, 1)) return INT32_MIN;
-    if (!(status & 0x20) || !(status & 0x10)) return INT32_MIN;   // TMP_RDY | PRS_RDY
 
-    uint8_t p[3], t[3];
+    // PRS_RDY governs. Requiring TMP_RDY as well throttles the whole loop to the
+    // temperature rate -- the bench test's 4 Hz mode measured 1 Hz for exactly
+    // that reason, and at 32 Hz it would have been eight times too slow.
+    if (!(status & 0x10)) return INT32_MIN;
+
+    uint8_t p[3];
     if (!readRegisters(REG_PSR_B2, p, 3)) return INT32_MIN;
-    if (!readRegisters(REG_TMP_B2, t, 3)) return INT32_MIN;
-
     const uint32_t pRaw = ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2];
-    const uint32_t tRaw = ((uint32_t)t[0] << 16) | ((uint32_t)t[1] << 8) | t[2];
 
-    *temperatureRaw = twosComplement24(tRaw);
+    // Temperature only when the part says it has a new one; otherwise reuse the
+    // last, which is all the compensation needs.
+    if (status & 0x20) {
+        uint8_t t[3];
+        if (readRegisters(REG_TMP_B2, t, 3)) {
+            _lastTempRaw = twosComplement24(((uint32_t)t[0] << 16) | ((uint32_t)t[1] << 8) | t[2]);
+            _haveTemp = true;
+        }
+    }
+
+    *temperatureRaw = _lastTempRaw;
     return twosComplement24(pRaw);
 }
 
