@@ -1,34 +1,46 @@
 # DPS310 bench test (ESP32 DevKit V1)
 
+Runs on **Adafruit's DPS310 library** (`adafruit/Adafruit DPS310`), not a
+hand-written driver.
+
 ```bash
 pio run -t upload
 pio device monitor -b 115200
 ```
 
-## What it found on the bench
+## Why the library
 
-* **The pins are the other way round from the labels.** `SDI -> 21, SCK -> 22` on
-  the silk does not match: the part answered only with **SDA 21 / SCL 22**, i.e.
-  the ESP32's usual default. The sketch tries both orders and reports which one
-  has a bus on it, so this is visible rather than a silent "no sensor".
-* **`dio` will not boot on this board.** With the default flash mode the ROM
-  loaded the second-stage bootloader and then looped on its entry point with no
-  output at all. `board_build.flash_mode = dout` fixed it.
-* **The compensated result is in pascals.** 89530 is 895.3 hPa, correct for
-  ~1000 m. Treating it as hPa made altitude and slope wrong by 100x.
-* **Gating on TMP_RDY throttled the loop to the 1 Hz temperature rate.** Pressure
-  readiness governs; temperature is read when offered and otherwise reused.
+A hand-written register driver was compared against the library on this board, in
+the same mode (128x oversampling, 4 Hz), one after the other:
+
+| | hand-written | Adafruit library |
+| :--- | ---: | ---: |
+| temperature | −3.6 °C | **22.9 °C** |
+| pressure | 894.8 hPa | **899.7 hPa** |
+| height noise | 0.36 cm | **0.27 cm** |
+
+The room was about 23 °C, so the library's temperature was right and the
+hand-written one was 26 degrees low — and that error moved the compensated
+pressure by 5 hPa. The coefficient handling for the temperature term is subtler
+than the datasheet formula suggests. The library wins on correctness, and there is
+now one implementation instead of two.
+
+## What the bench found
+
+* **The part answers on SDA 21 / SCL 22**, the reverse of the module's SDI/SCK
+  labelling. The sketch tries both orders and reports which has a bus on it.
+* **`dio` will not boot this board.** The ROM loads the second-stage bootloader
+  and then loops on its entry point with no output. `board_build.flash_mode = dout`.
+* **The library does not check readiness before reading.** Its first conversions
+  return stale registers — 833 hPa and −66 °C — so the sketch gates on
+  `pressureAvailable()` and rejects implausible temperatures.
 
 ## Measured
 
-At 128x pressure oversampling, 4 Hz output, on a bench at rest:
+128x oversampling, 4 Hz, at rest, after discarding the first 4 s:
 
 ```
-81 samples over 20 s
-  mean 894.821 hPa   sd 0.0428 hPa
-  peak-to-peak 0.163 hPa   (1.4 cm of height)
+88 samples over 22 s
+  mean 899.686 hPa   sd 0.0321 hPa   peak-to-peak 0.116 hPa
+  height noise ±0.27 cm      temperature 22.94 C      rate 4.0 Hz
 ```
-
-0.043 hPa is about **0.36 cm of height noise**, an order of magnitude better than
-a phone barometer. For grade this matters: at that noise a 5 m window yields
-roughly 0.06 % of slope noise, which is inside any sane level hysteresis.

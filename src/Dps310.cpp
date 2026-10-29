@@ -1,56 +1,41 @@
 #include "Dps310.h"
 
+#include <Adafruit_DPS310.h>
 #include <Wire.h>
 #include <math.h>
+
 #include "Telemetry.h"
 
 Dps310 Baro;
 
-// -----------------------------------------------------------------------------
-// registers (DPS310 datasheet, section 4)
-// -----------------------------------------------------------------------------
-static constexpr uint8_t REG_PSR_B2      = 0x00;   // pressure, 24 bit big-endian
-static constexpr uint8_t REG_TMP_B2      = 0x03;   // temperature, 24 bit
-static constexpr uint8_t REG_PRS_CFG     = 0x06;
-static constexpr uint8_t REG_TMP_CFG     = 0x07;
-static constexpr uint8_t REG_MEAS_CFG    = 0x08;
-static constexpr uint8_t REG_CFG_REG     = 0x09;
-static constexpr uint8_t REG_RESET       = 0x0C;
-static constexpr uint8_t REG_PROD_ID     = 0x0D;
-static constexpr uint8_t REG_COEF        = 0x10;   // 18 bytes
-static constexpr uint8_t REG_TMP_COEF_SRCE = 0x28;
-
-static constexpr uint8_t DPS310_PRODUCT_ID = 0x10;
-
-// Scaling denominators indexed by the oversampling code (1x..128x). This is the
-// datasheet's table, and it is not monotonic: the codes above 8x are a second
-// set, which is exactly the sort of thing worth copying rather than deriving.
-static constexpr float kScale[8] = {
-    524288.0f, 1572864.0f, 3670016.0f, 7864320.0f,
-    253952.0f, 516096.0f, 1040384.0f, 2088960.0f,
-};
-
-// Oversampling: code 4 = 16 measurements per result. In "high precision" terms
-// this is the datasheet's >8x regime, which requires the shift-enable bits in
-// CFG_REG *and* the 16x denominator above.
-static constexpr uint8_t PRS_OSR_16X = 4;
-static constexpr uint8_t TMP_OSR_16X = 4;
-
-// Output data rate: code 5 = 32 Hz. 16x oversampling takes ~27 ms per
-// conversion, so 32 Hz is the fastest rate that the measurement time actually
-// supports; asking for 64 Hz here would silently return stale conversions.
-static constexpr uint8_t RATE_32HZ = 5;
-
-static int32_t twosComplement24(uint32_t raw) {
-    if (raw & 0x800000UL) raw |= 0xFF000000UL;
-    return (int32_t)raw;
-}
+// The library object is file-static: nothing outside this translation unit needs
+// to know which library is behind the wrapper, and swapping it again would not
+// touch a header.
+static Adafruit_DPS310 s_dps;
 
 /**
- * Poll cadence. 16x oversampling at 32 Hz means a fresh conversion every 31 ms,
- * so polling faster than ~36 Hz only reads the same result twice.
+ * Measurement mode.
+ *
+ * 16x oversampling at 32 Hz. Above 16x the conversion takes long enough that the
+ * output rate has to drop below the sample rate the grade window wants (~30 Hz at
+ * 4 s / 192 samples); 32 Hz keeps the window fed, and the library's noise floor
+ * at 16x is still well under a centimetre of height. The bench measured 27 mm of
+ * noise at 128x, so 16x lands near 75 mm -- ample against a 1 % level band.
  */
-static constexpr uint32_t POLL_INTERVAL_MS = 1000 / 36;
+static constexpr dps310_rate_t       kPressureRate = DPS310_32HZ;
+static constexpr dps310_oversample_t kPressureOs   = DPS310_16SAMPLES;
+
+// Temperature only feeds the compensation, so it is measured rarely and the last
+// value is reused in between.
+static constexpr dps310_rate_t       kTempRate = DPS310_1HZ;
+static constexpr dps310_oversample_t kTempOs   = DPS310_1SAMPLE;
+
+// A sample is only trusted once the temperature is physically plausible. The
+// library reads whatever is in the register without checking readiness, so the
+// first conversions after setMode() return stale registers: 833 hPa and -66 C on
+// the bench.
+static constexpr float kMinPlausibleTempC = -40.0f;
+static constexpr float kMaxPlausibleTempC = 85.0f;
 
 bool Dps310::begin() {
 #if !DPS310_ENABLED
@@ -62,49 +47,26 @@ bool Dps310::begin() {
     // Probe both possible addresses: SDO low gives 0x76, SDO high or floating 0x77.
     const uint8_t candidates[2] = { 0x77, 0x76 };
     for (uint8_t addr : candidates) {
-        Wire.beginTransmission(addr);
-        if (Wire.endTransmission() != 0) continue;
-
-        _address = addr;
-        if (!readRegisters(REG_PROD_ID, &_productId, 1)) continue;
-        if (_productId != DPS310_PRODUCT_ID) continue;
-
-        _present = true;
-        break;
+        if (s_dps.begin_I2C(addr, &Wire)) {
+            _address = addr;
+            _present = true;
+            break;
+        }
     }
     if (!_present) {
-        Serial.printf("[BARO] no DPS310 on SDA %d / SCL %d\n", DPS310_SDA_PIN, DPS310_SCL_PIN);
+        Serial.printf("[BARO] no DPS310 on SDA %d / SCL %d\n",
+                      DPS310_SDA_PIN, DPS310_SCL_PIN);
         return false;
     }
 
-    // Soft reset, then wait for the coefficient block to be ready.
-    writeRegister(REG_RESET, 0x89);
-    delay(40);
-
-    if (!readCoefficients()) {
-        _present = false;
-        return false;
-    }
-
-    // Temperature source: the part's own sensor (bit 7 clear in TMP_CFG means
-    // internal). The external option is for a thermistor on a DPS368.
-    writeRegister(REG_TMP_COEF_SRCE, 0x00);
-
-    // 16x oversampling on both channels, 32 Hz output.
-    writeRegister(REG_PRS_CFG, (uint8_t)((RATE_32HZ << 4) | PRS_OSR_16X));
-    writeRegister(REG_TMP_CFG, (uint8_t)((RATE_32HZ << 4) | TMP_OSR_16X));
-
-    // Shift enable for oversampling above 8x: without these the raw values
-    // overflow the 24-bit result registers and the compensation is nonsense.
-    writeRegister(REG_CFG_REG, (uint8_t)((1 << 3) | (1 << 2)));
-
-    // Continuous pressure + temperature measurement.
-    writeRegister(REG_MEAS_CFG, 0b111);
+    s_dps.configurePressure(kPressureRate, kPressureOs);
+    s_dps.configureTemperature(kTempRate, kTempOs);
+    s_dps.setMode(DPS310_CONT_PRESTEMP);
 
     _lastPollMs = millis();
     _lastSampleMs = 0;
 
-    Serial.printf("[BARO] DPS310 at 0x%02X, 16x oversampling @ 32 Hz on SDA %d / SCL %d\n",
+    Serial.printf("[BARO] DPS310 at 0x%02X, 16x oversampling @ 32 Hz, SDA %d / SCL %d\n",
                   _address, DPS310_SDA_PIN, DPS310_SCL_PIN);
     return true;
 #endif
@@ -113,30 +75,28 @@ bool Dps310::begin() {
 void Dps310::process() {
     if (!_present) return;
 
+    // Ask the part whether a new pressure conversion exists. The library's own
+    // read does not check, so calling it on a timer returns duplicates and, at
+    // start-up, stale registers.
+    if (!s_dps.pressureAvailable()) return;
+
+    sensors_event_t pe, te;
+    if (!s_dps.getEvents(&te, &pe)) return;
+
+    const float pressure = pe.pressure;      // hPa
+    const float temperature = te.temperature; // degrees C
+
+    if (!isfinite(pressure) || pressure < 300.0f || pressure > 1100.0f) return;
+    if (!isfinite(temperature) ||
+        temperature < kMinPlausibleTempC || temperature > kMaxPlausibleTempC) {
+        return;
+    }
+
     const uint32_t now = millis();
-    if (now - _lastPollMs < POLL_INTERVAL_MS) return;
-    _lastPollMs = now;
 
-    int32_t tRaw = 0;
-    const int32_t pRaw = readRaw(&tRaw);
-    if (pRaw == INT32_MIN) return;   // not ready yet
-
-    // The compensated result is in PASCALS. 89530 is 895.3 hPa -- correct for a
-    // bike at about 1000 m -- and the bench test proved that treating it as hPa
-    // puts altitude and slope out by a factor of a hundred.
-    const float pressureHpa = compensatePressure(pRaw, tRaw) / 100.0f;
-
-    // Plausibility: a bike is never above Everest or below a vacuum chamber, and
-    // a failed I2C read produces exactly those extremes.
-    if (pressureHpa < 300.0f || pressureHpa > 1100.0f) return;
-
-    // Nothing is trustworthy before the first temperature conversion, because the
-    // coefficient set is incomplete and the pressure is off by several hPa.
-    if (!_haveTemp) return;
-
-    _sample.pressureHpa = pressureHpa;
-    _sample.temperatureC = _lastTempScaled;
-    _sample.altitudeM = 44330.0f * (1.0f - powf(pressureHpa / 1013.25f, 1.0f / 5.255f));
+    _sample.pressureHpa = pressure;
+    _sample.temperatureC = temperature;
+    _sample.altitudeM = 44330.0f * (1.0f - powf(pressure / 1013.25f, 1.0f / 5.255f));
 
     if (_lastSampleMs != 0) {
         const float dt = (now - _lastSampleMs) / 1000.0f;
@@ -232,7 +192,7 @@ bool Dps310::fitSlope(uint32_t nowMs, float* outPercent) {
         varS += ds * ds;
     }
     // The gate that matters: if the sample positions barely spread, dividing by
-    // their variance turns a few pascals into tens of percent of grade.
+    // their variance turns a few centimetres into tens of percent of grade.
     if (varS < _sCount * 4.0) return false;
 
     const double slope = cov / varS;
@@ -246,97 +206,4 @@ bool Dps310::fitSlope(uint32_t nowMs, float* outPercent) {
 
     *outPercent = constrain((float)(slope * 100.0), -SLOPE_MAX_PCT, SLOPE_MAX_PCT);
     return true;
-}
-
-bool Dps310::readRegisters(uint8_t reg, uint8_t* buf, size_t len) {
-    Wire.beginTransmission(_address);
-    Wire.write(reg);
-    if (Wire.endTransmission(false) != 0) return false;
-    if (Wire.requestFrom((int)_address, (int)len) != (int)len) return false;
-    for (size_t i = 0; i < len; i++) buf[i] = (uint8_t)Wire.read();
-    return true;
-}
-
-bool Dps310::writeRegister(uint8_t reg, uint8_t value) {
-    Wire.beginTransmission(_address);
-    Wire.write(reg);
-    Wire.write(value);
-    return Wire.endTransmission() == 0;
-}
-
-bool Dps310::readCoefficients() {
-    uint8_t b[18];
-    if (!readRegisters(REG_COEF, b, sizeof(b))) return false;
-
-    auto s12 = [](uint32_t v) -> int16_t {
-        if (v & 0x800U) v |= 0xF000U;
-        return (int16_t)v;
-    };
-    auto s20 = [](uint32_t v) -> int32_t {
-        if (v & 0x80000UL) v |= 0xFFF00000UL;
-        return (int32_t)v;
-    };
-
-    // c0 is only ever used halved, so halve it here and keep the name honest.
-    _c0Half = (int16_t)(s12(((uint32_t)b[0] << 4) | (b[1] >> 4)) / 2);
-    _c1  = s12(((uint32_t)(b[1] & 0x0F) << 8) | b[2]);
-    _c00 = s20(((uint32_t)b[3] << 12) | ((uint32_t)b[4] << 4) | (b[5] >> 4));
-    _c10 = s20(((uint32_t)(b[5] & 0x0F) << 16) | ((uint32_t)b[6] << 8) | b[7]);
-    _c01 = (int16_t)(((uint32_t)b[8] << 8) | b[9]);
-    _c11 = (int16_t)(((uint32_t)b[10] << 8) | b[11]);
-    _c20 = (int16_t)(((uint32_t)b[12] << 8) | b[13]);
-    _c21 = (int16_t)(((uint32_t)b[14] << 8) | b[15]);
-    _c30 = (int16_t)(((uint32_t)b[16] << 8) | b[17]);
-
-    // An all-zero or all-ones block means the read failed rather than that the
-    // part has no calibration.
-    bool anyNonZero = false;
-    for (uint8_t v : b) if (v != 0x00 && v != 0xFF) { anyNonZero = true; break; }
-    return anyNonZero;
-}
-
-/**
- * One conversion. Returns INT32_MIN when a fresh result is not ready yet, which
- * is normal at the top of the 32 Hz cycle.
- */
-int32_t Dps310::readRaw(int32_t* temperatureRaw) {
-    uint8_t status = 0;
-    if (!readRegisters(REG_MEAS_CFG, &status, 1)) return INT32_MIN;
-
-    // PRS_RDY governs. Requiring TMP_RDY as well throttles the whole loop to the
-    // temperature rate -- the bench test's 4 Hz mode measured 1 Hz for exactly
-    // that reason, and at 32 Hz it would have been eight times too slow.
-    if (!(status & 0x10)) return INT32_MIN;
-
-    uint8_t p[3];
-    if (!readRegisters(REG_PSR_B2, p, 3)) return INT32_MIN;
-    const uint32_t pRaw = ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2];
-
-    // Temperature only when the part says it has a new one; otherwise reuse the
-    // last, which is all the compensation needs.
-    if (status & 0x20) {
-        uint8_t t[3];
-        if (readRegisters(REG_TMP_B2, t, 3)) {
-            _lastTempRaw = twosComplement24(((uint32_t)t[0] << 16) | ((uint32_t)t[1] << 8) | t[2]);
-            _haveTemp = true;
-        }
-    }
-
-    *temperatureRaw = _lastTempRaw;
-    return twosComplement24(pRaw);
-}
-
-/**
- * Datasheet compensation, term for term. The temperature is scaled once and kept
- * because the pressure formula needs it and the part supplies it on the same
- * conversion.
- */
-float Dps310::compensatePressure(int32_t pRaw, int32_t tRaw) {
-    const float tScaled = (float)tRaw / kScale[TMP_OSR_16X];
-    _lastTempScaled = (float)_c0Half + (float)_c1 * tScaled;
-
-    const float pScaled = (float)pRaw / kScale[PRS_OSR_16X];
-    return (float)_c00
-         + pScaled * ((float)_c10 + pScaled * ((float)_c20 + pScaled * (float)_c30))
-         + tScaled * ((float)_c01 + pScaled * ((float)_c11 + pScaled * (float)_c21));
 }
