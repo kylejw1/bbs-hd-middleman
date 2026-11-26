@@ -1,97 +1,194 @@
-// DPS310 bench test — ESP32 DevKit V1, on Adafruit's DPS310 library.
+// DPS310 — temperature, pressure and altitude, calibrated for Calgary.
 //
-// Replaces the hand-written register driver so there is one implementation to
-// trust rather than two to keep in step. The library handles the coefficient
-// read, the compensation scaling and the shift-enable bit for high oversampling;
-// the only decisions left here are the mode and the wiring.
-//
-// Wiring found on the bench: the part answers on SDA 21 / SCL 22, which is the
-// reverse of the module's SDI/SCK labelling. Both orders are tried and the one
-// with a bus on it is reported, so a mis-wired sensor diagnoses itself.
+// The chip measures pressure and temperature; altitude is derived from pressure
+// against a sea-level reference. That reference is what "set it to Calgary"
+// means: the default 1013.25 hPa is a standard atmosphere, not Calgary's, so
+// using it puts the altitude reading out by well over a hundred metres. Instead
+// the sketch solves for the reference that makes the local pressure equal
+// Calgary's known elevation, once, at startup.
 
-#include <Arduino.h>
 #include <Adafruit_DPS310.h>
-#include <Wire.h>
-
-static constexpr int PIN_A = 22;    // first attempt: SDA 22 / SCL 21
-static constexpr int PIN_B = 21;
-static constexpr uint32_t I2C_HZ = 400000;
 
 Adafruit_DPS310 dps;
-TwoWire i2c(0);
 
-// Anything answering in the sensor range, so a wiring fault is distinguishable
-// from a missing sensor.
-static int scanBus() {
-    int found = -1;
-    Serial.print("  scan:");
-    for (uint8_t a = 0x08; a < 0x78; a++) {
-        i2c.beginTransmission(a);
-        if (i2c.endTransmission() == 0) {
-            Serial.printf(" 0x%02X", a);
-            if (found < 0 && (a == 0x76 || a == 0x77)) found = a;
-        }
+// Can also use SPI!
+#define DPS310_CS 10
+
+// --- Calgary -----------------------------------------------------------------
+// City of Calgary's published elevation. Downtown is around 1042 m and the
+// airport around 1084 m, so this is a rough city datum -- put in your own
+// location's elevation from a map if you want the absolute number to be right at
+// your bench. Everything *relative* (the dH readout) is unaffected by the error.
+//
+// The sea-level reference is single-shot: a change in weather moves the absolute
+// altitude by tens of metres, exactly as it does on any barometric altimeter.
+// What it does not move is the difference between two readings minutes apart,
+// which is what the slope maths actually uses.
+static constexpr float CALGARY_ELEVATION_M = 1045.0f;
+
+// Standard-atmosphere constant: the exponent in the barometric formula.
+static constexpr float BARO_EXP = 0.1903f;
+
+// How often the readout is printed. Sampling continues at the sensor's rate
+// regardless; this only throttles the serial output.
+static constexpr uint32_t PRINT_INTERVAL_MS = 500;
+
+static float seaLevelHpa = 1013.25f;
+
+static float altitudeFor(float pressureHpa) {
+  return 44330.0f * (1.0f - powf(pressureHpa / seaLevelHpa, BARO_EXP));
+}
+
+/**
+ * Work out the sea-level pressure that puts the current reading at Calgary's
+ * elevation, by inverting the barometric formula:
+ *
+ *   P0 = P / (1 - h/44330)^(1/0.1903)
+ *
+ * Averaged over a couple of seconds because a single conversion is noisier than
+ * the reference needs to be.
+ */
+static float calibrateSeaLevel() {
+  Serial.println(F("Calibrating against Calgary..."));
+
+  // Let the first conversions settle: the library reads whatever is in the
+  // registers, so the first samples after configuring are stale.
+  delay(1500);
+
+  float sum = 0;
+  int n = 0;
+  const uint32_t t0 = millis();
+  while (millis() - t0 < 2000) {
+    if (dps.pressureAvailable()) {
+      sensors_event_t te, pe;
+      dps.getEvents(&te, &pe);
+      if (pe.pressure > 300.0f && pe.pressure < 1100.0f) {
+        sum += pe.pressure;
+        n++;
+      }
     }
-    if (found < 0) Serial.print(" (no DPS310)");
-    Serial.println();
-    return found;
+    delay(2);
+  }
+
+  if (n == 0) {
+    Serial.println(F("  no valid readings, keeping standard 1013.25 hPa"));
+    return 1013.25f;
+  }
+
+  const float meanHpa = sum / n;
+  const float denom = powf(1.0f - CALGARY_ELEVATION_M / 44330.0f, 1.0f / BARO_EXP);
+  const float seaLevel = meanHpa / denom;
+
+  Serial.printf("  mean pressure   %.3f hPa over %d samples\n", meanHpa, n);
+  Serial.printf("  elevation datum %.0f m\n", CALGARY_ELEVATION_M);
+  Serial.printf("  sea-level ref   %.3f hPa\n", seaLevel);
+  return seaLevel;
+}
+
+// --- rolling 5 s altitude window --------------------------------------------
+// 512 entries covers 2.5 s at up to 200 Hz, and 39 s at the ~13 Hz the part
+// actually manages at 64x oversampling.
+static constexpr uint32_t OFFSET_WINDOW_MS = 2500;
+static constexpr int      RING             = 512;
+// Reference must be at least this old, or the number would be measured over a
+// fraction of a second and read as a movement that did not happen.
+static constexpr uint32_t MIN_SPAN_MS      = 2000;
+
+static float    ringAlt[RING];
+static uint32_t ringMs[RING];
+static int      ringHead  = 0;
+static int      ringCount = 0;
+
+static void pushSample(uint32_t nowMs, float altM) {
+  ringAlt[ringHead] = altM;
+  ringMs[ringHead]  = nowMs;
+  ringHead = (ringHead + 1) % RING;
+  if (ringCount < RING) ringCount++;
+}
+
+/**
+ * Index of the oldest sample still worth using, or -1 while the window is still
+ * filling. Pruning keeps the newest sample that is already older than the
+ * window, so the reference sits as close to 5 s ago as the sample rate allows.
+ */
+static int oldestSample() {
+  if (ringCount == 0) return -1;
+  const uint32_t now = millis();
+  int oldest = (ringHead - ringCount + RING) % RING;
+  while (ringCount > 1) {
+    const int next = (oldest + 1) % RING;
+    if (now - ringMs[next] <= OFFSET_WINDOW_MS) break;
+    oldest = next;
+    ringCount--;
+  }
+  if (now - ringMs[oldest] < MIN_SPAN_MS) return -1;
+  return oldest;
 }
 
 void setup() {
-    Serial.begin(115200);
-    delay(1200);
-    Serial.println();
-    Serial.println("=== DPS310 bench test (Adafruit library) ===");
+  Serial.begin(115200);
+  while (!Serial)
+    delay(10);
 
-    int addr = -1;
-    for (int attempt = 0; attempt < 2 && addr < 0; attempt++) {
-        const int sda = (attempt == 0) ? PIN_A : PIN_B;
-        const int scl = (attempt == 0) ? PIN_B : PIN_A;
-        if (attempt == 1) Serial.println("  retrying with SDA/SCL swapped");
-        Serial.printf("I2C on SDA %d, SCL %d\n", sda, scl);
+  Serial.println("DPS310");
+  if (!dps.begin_I2C()) { // Can pass in I2C address here
+    // if (! dps.begin_SPI(DPS310_CS)) {  // If you want to use SPI
+    Serial.println("Failed to find DPS");
+    while (1)
+      yield();
+  }
+  Serial.println("DPS OK!");
 
-        i2c.end();
-        i2c.begin(sda, scl, I2C_HZ);
-        i2c.setTimeOut(20);
-        delay(20);
-        addr = scanBus();
-    }
-    if (addr < 0) {
-        Serial.println("!! no DPS310 on either pin order — check 3V3, GND and the jumpers");
-        while (true) delay(1000);
-    }
+  dps.configurePressure(DPS310_64HZ, DPS310_64SAMPLES);
+  dps.configureTemperature(DPS310_64HZ, DPS310_64SAMPLES);
 
-    if (!dps.begin_I2C(addr, &i2c)) {
-        Serial.println("!! begin_I2C failed");
-        while (true) delay(1000);
-    }
-
-    // Highest pressure precision the part offers. The library sets the shift bit
-    // for oversampling above 8x, which is mandatory there.
-    dps.configurePressure(DPS310_4HZ, DPS310_128SAMPLES);
-    dps.configureTemperature(DPS310_1HZ, DPS310_1SAMPLE);
-    dps.setMode(DPS310_CONT_PRESTEMP);
-
-    Serial.println("mode: pressure 128x @ 4 Hz, temperature 1x @ 1 Hz");
-    Serial.println();
-    Serial.println("   t_ms   pressure_hPa   temp_C     dt_ms   Hz");
+  seaLevelHpa = calibrateSeaLevel();
+  Serial.println();
 }
 
 void loop() {
-    if (!dps.pressureAvailable()) {
-        delay(2);
-        return;
-    }
+  sensors_event_t temp_event, pressure_event;
 
-    sensors_event_t pe, te;
-    dps.getEvents(&te, &pe);
+  while (!dps.temperatureAvailable() || !dps.pressureAvailable()) {
+    return; // wait until there's something to read
+  }
 
-    static uint32_t lastMs = 0;
-    const uint32_t now = millis();
-    const float dt = (lastMs == 0) ? 0.0f : (float)(now - lastMs);
-    lastMs = now;
+  dps.getEvents(&temp_event, &pressure_event);
 
-    Serial.printf("%8lu  %12.3f  %7.2f  %8.1f  %5.1f\n",
-                  (unsigned long)now, pe.pressure, te.temperature, dt,
-                  dt > 0.0f ? 1000.0f / dt : 0.0f);
+  // Altitude from the calibrated reference, computed for every sample so the
+  // 5 s window is fed at the sensor's own rate...
+  const float altitudeM = altitudeFor(pressure_event.pressure);
+  const uint32_t now = millis();
+  pushSample(now, altitudeM);
+
+  // ...but printed only twice a second. The window needs the full-rate samples;
+  // the eye does not.
+  static uint32_t lastPrintMs = 0;
+  if (now - lastPrintMs < PRINT_INTERVAL_MS) return;
+  lastPrintMs = now;
+
+  Serial.print(F("Temperature = "));
+  Serial.print(temp_event.temperature);
+  Serial.println(" *C");
+
+  Serial.print(F("Pressure = "));
+  Serial.print(pressure_event.pressure);
+  Serial.println(" hPa");
+
+  Serial.printf("Altitude = %.1f m\n", altitudeM);
+
+  // Rolling 2.5 s offset: how far the altitude has moved relative to where it was
+  // 2.5 seconds ago. This is a sliding window, not a baseline that resets -- so
+  // it answers "am I climbing right now?" continuously, and a slow drift cancels
+  // instead of accumulating.
+  const int oldest = oldestSample();
+  if (oldest < 0) {
+    Serial.println(F("  dH(2.5s) =   -- cm   (filling window)"));
+  } else {
+    Serial.printf("  dH(2.5s) = %+.2f cm over %.2f s\n",
+                  (altitudeM - ringAlt[oldest]) * 100.0f,
+                  (now - ringMs[oldest]) / 1000.0f);
+  }
+
+  Serial.println();
 }
