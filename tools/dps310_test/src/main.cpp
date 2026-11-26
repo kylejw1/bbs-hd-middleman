@@ -1,11 +1,13 @@
 // DPS310 — temperature, pressure and altitude, calibrated for Calgary.
 //
 // The chip measures pressure and temperature; altitude is derived from pressure
-// against a sea-level reference. That reference is what "set it to Calgary"
-// means: the default 1013.25 hPa is a standard atmosphere, not Calgary's, so
-// using it puts the altitude reading out by well over a hundred metres. Instead
-// the sketch solves for the reference that makes the local pressure equal
-// Calgary's known elevation, once, at startup.
+// against a sea-level reference, by the library's readAltitude().
+//
+// That reference is what "set it to Calgary" means: the default 1013.25 hPa is a
+// standard atmosphere, not Calgary's, so using it puts the altitude reading out
+// by well over a hundred metres. Instead the sketch solves for the reference
+// that makes the local pressure equal Calgary's known elevation, once, at
+// startup, and hands it to readAltitude() from then on.
 
 #include <Adafruit_DPS310.h>
 
@@ -34,10 +36,6 @@ static constexpr float BARO_EXP = 0.1903f;
 static constexpr uint32_t PRINT_INTERVAL_MS = 500;
 
 static float seaLevelHpa = 1013.25f;
-
-static float altitudeFor(float pressureHpa) {
-  return 44330.0f * (1.0f - powf(pressureHpa / seaLevelHpa, BARO_EXP));
-}
 
 /**
  * Work out the sea-level pressure that puts the current reading at Calgary's
@@ -155,9 +153,12 @@ void loop() {
 
   dps.getEvents(&temp_event, &pressure_event);
 
-  // Altitude from the calibrated reference, computed for every sample so the
-  // 5 s window is fed at the sensor's own rate...
-  const float altitudeM = altitudeFor(pressure_event.pressure);
+  // Altitude straight from the library, against the reference seeded at boot.
+  // Still computed for every sample so the window is fed at the sensor's own
+  // rate. Note readAltitude() performs its own register read, so this is a
+  // second I2C read per iteration and it may see a slightly newer conversion
+  // than the pressure printed below.
+  const float altitudeM = dps.readAltitude(seaLevelHpa);
   const uint32_t now = millis();
   pushSample(now, altitudeM);
 
