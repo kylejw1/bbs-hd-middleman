@@ -106,21 +106,13 @@ Every value the dashboard shows from the *display* protocol -- speed, voltage, b
 * **0x21 / 0x22 / 0x24 are three-byte queries.** They carry a trailing checksum (`0x11 + op`), and the controller ignores the two-byte form *silently* -- no error, no reply. Asking for voltage with two bytes produced a permanent 0.0 V and a suspicion that the decode was wrong; the decode was fine, the request never got answered. Voltage now reads correctly (39.8 V on a 36 V pack).
 * Queries are spaced by a 40 ms bus-idle check so they never land mid-frame.
 
-### Debug Telemetry Frame (`0xEC`, bbs-fw fork)
-The fork emits a debug frame so the middleman can show live motor targets the display protocol never exposes:
+### No Debug Telemetry Frame Any More
 
-```
-0xEC, target_current_percent, target_speed_percent,
-     cadence_rpm_x10_hi, cadence_rpm_x10_lo,
-     motor_rpm_x10_hi, motor_rpm_x10_lo, checksum
-```
+bbs-fw used to emit a `0xEC` frame carrying target current, target speed, pedal cadence and motor rpm. Commit `30f97cb` removed it, and the firmware is the reference for what exists, so **the middleman no longer parses it and `/api/telemetry` no longer carries `cadenceRpm`, `motorRpm`, `targetCurrentPercent`, `targetSpeedPercent` or `hasTargetTelemetry`.** The Android app lost its CADENCE hero, its three target cells and its PAS curve with them.
 
-**Eight bytes including the checksum** (`EVENT_LOG_TELEMETRY_SIZE`). Parsed in both `processControllerRxPassThrough()` and `consumeControllerEventFrame()`, applied through `updateTargetTelemetry()`, and **swallowed** like the other event frames so the display never sees it.
+Do not reintroduce those fields without first adding the frame back to bbs-fw. The display protocol never carried them; there is no other source.
 
-* `cadence_rpm_x10` is `pas_get_cadence_rpm_x10()`. `motor_rpm_x10` is `hall_get_motor_rpm_x10()`, reported in output-shaft rpm so it is directly comparable to pedal cadence; it reads zero when the motor is not turning.
-* Emitted only while the event log is enabled, which the middleman does at boot via `enableEventLog(true)`.
-* **There are no torque or load fields.** Earlier revisions of this document described a 13-byte frame carrying `rider_torque_dnm`, `load_bias_dnm` and `load_flags`, and listed `riderTorqueNm`/`loadBiasNm`/`loadValid`/`loadConfidence`/`loadSaturated` in `/api/telemetry`. None of that exists in this tree — grepping those names finds only this paragraph. Do not build UI or firmware against them.
-* `/api/telemetry` exposes `hasTargetTelemetry`, `targetCurrentPercent`, `targetSpeedPercent`, `cadenceRpm` and `motorRpm`. `hasTargetTelemetry` goes false once the last frame is older than 4 s, so stale targets never render as live.
+The `0xEE` / `0xED` event-log frames still exist and are still parsed and swallowed.
 
 ### Binary Configuration Struct Layout (Version 5, 154 Bytes)
 Defined in [`include/BbsFwProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/include/BbsFwProtocol.h):
@@ -156,7 +148,7 @@ The ESP32-S3 has a **single 2.4 GHz radio**, so AP+STA coexistence is slow. The 
 * All lifecycle work happens non-blockingly in `WebPortal::process()` driven by the `WifiPhase` state machine (`StaConnecting` → `StaConnected` / `ApScanning` → `ApOnly`). Never add a blocking wait here — it would stall `Bridge.process()` and overrun the 1200-baud UART.
 
 ### Bluetooth LE Transport (`BlePortal`)
-The dashboard is normally reached over Wi-Fi, but a page loaded over **HTTPS** cannot call `http://192.168.4.1` (mixed content) and Web Bluetooth requires a **secure context** the ESP32 cannot provide. The hosted copy therefore reaches the bike over BLE GATT. This is additive: the on-device HTTP copy remains the universal fallback and is the only option on iOS Safari, which has no Web Bluetooth at all.
+**BLE is the transport the product uses.** The Android app is the only client; the web page that remains exists solely to upload firmware. There is no browser dashboard, no Web Bluetooth path and no hosted copy — a browser needing a secure context for Web Bluetooth was the original reason for a hosted page, and that whole branch is gone.
 
 **`Ble.begin()` MUST run before `Portal.begin()` in `setup()`.** This is not a preference and not about memory — it is a hard requirement of this toolchain:
 
@@ -173,8 +165,8 @@ The dashboard is normally reached over Wi-Fi, but a page loaded over **HTTPS** c
 
 * **Stack**: Bluedroid (`BLEDevice.h`), the only BLE stack the precompiled `espressif32@6.12.0` SDK ships (`libbt.a`; there is no NimBLE library in that core). On by default via `BLE_TRANSPORT_ENABLED` in [`Config.h`](file:///home/kyle/dev/bbs-hd-middleman/include/Config.h); set it to `0` to drop roughly 600 KB flash / 30 KB RAM (measured on the S3: flash 970 KB → 1,573 KB, RAM 61 KB → 91 KB).
 * **Cost**: ~47% of the 3.19 MB app slot and ~28% of DRAM, so both OTA slots fit.
-* **Device name**: `BLE_DEVICE_NAME` (`BBSHD-Middleman`); the service UUID is advertised so the browser can filter on it.
-* **UUIDs and frame layout** live in [`include/BleProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/include/BleProtocol.h) and are duplicated verbatim in `web/index.html`. Change them in both places or discovery silently stops working.
+* **Device name**: `BLE_DEVICE_NAME` (`BBSHD-Middleman`); the service UUID is advertised so the app can filter its scan on it.
+* **UUIDs and frame layout** live in [`include/BleProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/include/BleProtocol.h) and are duplicated verbatim in the app's `BleClient.kt`. Change them in both places or discovery silently stops working.
 
 | Characteristic | Props | Payload |
 | :--- | :--- | :--- |
@@ -188,7 +180,7 @@ The dashboard is normally reached over Wi-Fi, but a page loaded over **HTTPS** c
 * **Threading (critical)**: the GATT callbacks run on the **Bluedroid task**. They do nothing but append bytes to a mutex-protected ring and flip a `_connected` flag. `BlePortal::process()` — called from `loop()` — reassembles the request, calls `Portal.dispatchApi()` and notifies the reply. Never dispatch an API call from a callback: the handlers drive the 1200-baud bridge and a config write holds `CONFIG_INTERCEPT` for over a second.
 * A half-received request and the pending queue are discarded on disconnect.
 
-**Browser support is not "all Chromium".** Chrome/Edge desktop and Chrome Android expose Web Bluetooth; Brave ships it disabled (`brave://flags/#enable-web-bluetooth`); Safari and Firefox have none, so iOS must use the on-device Wi-Fi page. Never infer the API from the user agent — `bleSupported()` feature-detects and the page shows **BT: Unsupported**.
+**The browser is no longer a BLE client.** Web Bluetooth was why the old page existed; with the app as the only client, `bleSupported()` and the **BT: Unsupported** indicator went with it. A desktop browser can still reach the device over HTTP for the upload page, but it cannot drive the API.
 
 ### BLE Push Notifications
 Replies and pushes share the RESPONSE characteristic and are told apart by the sequence range. For a push the `status` field carries the push kind instead of an HTTP status:
@@ -213,8 +205,33 @@ BLE GATT has no notion of "who is connecting". Without a gate, anyone in radio r
 * The gate is **transport-specific on purpose**: the Wi-Fi/HTTP page is never gated, because reaching it already requires being on the bike's own network or access point — and that page is the recovery path if the PIN is forgotten. It hosts the set/clear control via `/api/ble-pin` (also in `API_ROUTES`, so the hosted BLE page can use the same control once authenticated).
 * `GET /api/ble-pin` reports only `pinSet`/`bleEnabled`; it never returns the PIN. `POST` accepts `{"pin":"..."}` (4–16 characters) and an empty string clears it.
 * `_authenticated` is **per connection** and cleared every time a link comes up. `_authFailures` deliberately is **not** — reconnecting does not buy a fresh budget. After `BLE_AUTH_MAX_ATTEMPTS` (5) the transport refuses for `BLE_AUTH_LOCKOUT_MS` (30 s) with `429`.
-* The dashboard stores the PIN in `localStorage` (`bbshd.ble.pin`) and sends it automatically; if the device rejects it, the user is prompted once, and a second failure aborts the connection rather than leaving an unusable link up.
+* The app stores the PIN and sends it automatically; if the device rejects it, the user is prompted once, and a second failure aborts the connection rather than leaving an unusable link up.
 * **Not covered:** the HTTP API is unauthenticated by design (see above), and the BLE link itself is not encrypted — there is no bonding/passkey, so the PIN is protection against casual tampering, not against a determined attacker with a radio sniffer. Bonding would be the next step if that matters.
+
+### Altitude Forwarding (`0xf4`) — barometer to bbs-fw
+
+The bbs-fw fork computes the grade **on the controller** from the wheel-sensor tick counter and a stream of altitude samples. The middleman's job is therefore only to measure height and hand samples over at a steady rate; it does not compute or act on a slope for this path.
+
+```
+0x02, 0xf4, <epoch u32 BE>, <altitude_cm i32 BE>, <checksum>
+```
+
+* **11 bytes, no response.** `process_write_pressure()` consumes the frame and returns; it writes nothing back, so no stray bytes reach the display parser.
+* **Altitude is centimetres** (metres × 100) — what the middleman's header calls `value_x100`. bbs-fw stores it as `int16_t`, and `app_push_pressure()` keeps `(int16_t)value_x100`, so the wire value must stay inside ±32767 cm. `SerialBridge::sendAltitude()` clamps at ±32000 **and the caller sends relative to a boot baseline**, because an absolute altitude (1045 m = 104 500 cm) would wrap immediately.
+* **The epoch is ignored** by bbs-fw (`(void)epoch;` — it timestamps samples with its own `system_ms()`), so the middleman sends `millis()`.
+* **The grade maths lives in `app.c`**: at most 4 s of samples (`SLOPE_WINDOW_MS`), newest against oldest, `SLOPE_HEIGHT_RATIO 6400` converting cm per decimetre to permille. That is why the sample rate matters more than any filtering here — the window needs enough samples, not clever ones.
+
+**It is off by default and opt-in per device.** A frame is 92 ms of a 1200-baud bus that the display is also using, so `Bridge.setAltitudeSending()` starts `false`, is persisted in NVS as `alt_send`, and is switched from the dashboard checkbox or `POST /api/altitude {"enabled":true|false}`. `GET /api/altitude` reports `enabled`, whether a barometer is present (`baro`), and the live altitude/pressure/rate — enabling it with no sensor returns `409` rather than accepting a setting that would do nothing.
+
+**Three gates before a frame is written** (`SerialBridge::sendAltitude()`), each of which prevents a specific corruption:
+
+1. `_state == PASS_THROUGH` — a config transaction owns the controller's UART and expects its own replies.
+2. `!_holdWrite` — our bytes must not land inside a display write that is being held for PAS rewriting.
+3. Bus idle ≥40 ms since the last display byte, and the previous frame has drained (`_controllerTxBusyUntilMs`, 11 bytes × 9 ms). Two frames written back to back arrive at the controller as one corrupt frame.
+
+Display queries arriving *during* the 92 ms transmission are safe: they queue behind it in the same UART FIFO, so the controller sees one complete frame and then the next. A refusal is retried on the next loop pass rather than sent twice.
+
+The pacing is in `feedAltitudeToController()` in [`src/main.cpp`](file:///home/kyle/dev/bbs-hd-middleman/src/main.cpp) — 5 Hz, which fills bbs-fw's 4 s window with 20 samples and keeps the bus under half occupied.
 
 ### PAS Override (auto-assist)
 The display is the authority on assist level: it re-asserts its own level on **every poll cycle** (`16 0b 00 21`, about 1 s apart). A one-shot `injectPasLevel()` therefore reads back correctly and then reverts, which is why `POST /api/cmd/pas` cannot raise assist while a display is attached.
@@ -226,23 +243,18 @@ The display is the authority on assist level: it re-asserts its own level on **e
 * Telemetry reports the **override** level, not what the display asked for, or the app would display a level the controller is not using.
 * The immediate push uses the same 25 ms bus-idle rule as every other injected frame, so it never lands mid-frame.
 
-### Web UI Polling Budget
-Over HTTP the dashboard polls `/api/telemetry` (1.5 s) and `/api/events` (3 s). **Over Bluetooth neither poll runs** while pushes are healthy: telemetry arrives pushed at 1 s and the event log is pushed only on change, so the dashboard is both fresher and quieter than its HTTP equivalent. The Debug Console poll (`/api/serial-trace`, 0.5 s) still runs on both transports, and only while the toggle is on and its tab is visible. All polling functions bail out when `document.hidden`. `DebugLog` tracing is disabled by default (`DEBUG_TRACE_ENABLED_DEFAULT 0`) so an idle device generates no trace traffic.
+### Web Page: Firmware Upload Only
 
-### Dashboard Sources & Build Pipeline (critical)
-The dashboard has **one source of truth: [`web/index.html`](file:///home/kyle/dev/bbs-hd-middleman/web/index.html)**. The same file is delivered two ways:
+The web UI is **one small page that uploads firmware and nothing else** ([`web/index.html`](file:///home/kyle/dev/bbs-hd-middleman/web/index.html), embedded into `include/WebContent.h` by `tools/embed_web.py` as a PlatformIO pre-script).
 
-* **On-device** — `tools/embed_web.py` wraps it in a PROGMEM raw string literal and writes `include/WebContent.h`, which `WebPortal` serves at `/`. This runs as a PlatformIO pre-script (`extra_scripts = pre:tools/embed_web.py`), so the header is regenerated before every build.
-* **Hosted** — GitHub Pages serves `web/` over HTTPS (see [`.github/workflows/pages.yml`](file:///home/kyle/dev/bbs-hd-middleman/.github/workflows/pages.yml)), which makes it a secure context so `navigator.bluetooth` exists. That copy talks BLE; `web/sw.js` caches the shell so it opens with no network at all.
+Everything else — dashboard, controller config, assist controls, the altitude switch — lives in the Android app over BLE. The page survives because a ~1.5 MB image has no place in GATT request framing, not because a browser dashboard is wanted.
 
-`include/WebContent.h` is **generated** and committed only so a checkout always compiles. Editing it directly is pointless: the next build silently reverts you. Edit `web/index.html` and run `python3 tools/embed_web.py` (or just build).
-
-Keep the page honest about where it runs: `isHostedCopy()` (HTTPS means hosted — the ESP32 only serves plain HTTP) gates both the PWA wiring (`initPwa()`) and the default transport. The manifest, service worker and icons are **not** served by the ESP32, so the device copy must never request them.
-
-**Never call `sys.exit()` from a PlatformIO pre-script.** `SystemExit` propagates out of the SConscript and terminates SCons with a *clean* status, so `pio run` prints `SUCCESS` in ~0.5 s without compiling anything. If a build finishes suspiciously fast, check that it actually recompiled.
+* **There is no hosted copy.** The Pages workflow, PWA manifest, service worker and icons were deleted along with the dashboard; `web/` is served only by the ESP32 itself, over plain HTTP on the LAN or its own AP.
+* Edit `web/index.html` and rebuild — `include/WebContent.h` is generated and must never be edited by hand.
+* The page posts the raw file body to `/update`; no multipart wrapper, because the handler streams straight into `Update.begin()` / `Update.write()`.
 
 ### Transport-Neutral API
-Every dashboard call goes through `apiFetch()` in `web/index.html`, which is the single choke point between the UI and the backend. On the wire the API is one implementation shared by both transports:
+Every call from the app goes through `BleClient`'s request framing; the same handler bodies also answer HTTP for `/update`'s neighbours and for `curl`. On the wire the API is one implementation shared by both transports:
 
 * `API_ROUTES[]` in [`src/ApiHandlers.cpp`](file:///home/kyle/dev/bbs-hd-middleman/src/ApiHandlers.cpp) is the route table. `WebPortal::setupRoutes()` registers one HTTP handler per row and `WebPortal::dispatchApi()` switches on the matching `ApiRouteId`, so the HTTP and BLE transports cannot diverge.
 * Route handlers never touch `_server` for an API reply. They call `sendApi()`, which either writes to the HTTP socket or captures into an `ApiResponse` when the BLE transport is driving. This is why one handler body serves both transports byte-for-byte.
@@ -253,8 +265,8 @@ Every dashboard call goes through `apiFetch()` in `web/index.html`, which is the
 ### Android Companion App (`android/`)
 A native Kotlin app for a phone on the handlebars: one screen of live values over BLE, screen kept awake, automatic reconnect. It is a **separate Gradle build** in `android/`, independent of PlatformIO: `pio run` does not build it and nothing in `include/` or `src/` knows it exists. It only talks to the running firmware over the air.
 
-* **It exists because Web Bluetooth cannot cover this ground.** `web/index.html` already does BLE, but only in Chrome — Web Bluetooth does not exist in an Android WebView, and the hosted copy needs HTTPS to be a secure context at all. A native app has neither limit: offline forever, screen kept awake, survives a browser data clear.
-* **The wire format now has THREE implementations and they must agree.** `include/BleProtocol.h` is the specification; `web/index.html` and `android/app/src/main/java/com/bbshd/middleman/BleClient.kt` are the clients. Changing a UUID, a header field or the push-kind numbering means changing all three, or discovery silently stops working. The rule that already covered the two copies now covers three.
+* **It is the only client.** Web Bluetooth was the original reason for a browser dashboard and a hosted page; both are gone, so the app is not a companion to a web UI — it *is* the UI, other than the firmware upload page.
+* **The wire format has two implementations and they must agree.** `include/BleProtocol.h` is the specification and `android/app/src/main/java/com/bbshd/middleman/BleClient.kt` implements it. Changing a UUID, a header field or the push-kind numbering in one and not the other fails silently at runtime.
 * **The app is a full client now, with one deliberate gap.** It has five tabs — DASHBOARD, EVENTS, DEVICE, CONFIG, DEBUG — and edits the controller's config over BLE by round-tripping the JSON from `/api/config` rather than re-deriving the packed 154/174-byte struct in Kotlin. Firmware upload remains web-only: a ~1.5 MB image has no place in BLE request framing.
 * **Config writes are guarded three ways, all of them learned from a real incident.** The first hardware write silently flipped assist level 3's `flags` from 3 to 0 because level fields were seeded from the root JSON object instead of the level's own entry. Now: (a) `write()` refuses unless a config was actually read, because `deserializeConfigFromJson` zeroes the struct before applying keys and `{}` would erase the EEPROM; (b) the confirmation lists exactly which fields differ from what was read, which is the check that would have caught the incident; (c) `flags` is removed on collect so the firmware rebuilds it from the checkboxes — `deserializeLevelFlags()` lets an explicit `flags` byte override the booleans, so keeping it made every toggle a silent no-op. Comparisons are normalised (`0` vs `false`, `26` vs `26.0`, float widening) or an untouched config reported five phantom changes.
 * **The debug console fetches on demand, never on a timer.** A full trace ring is 512 entries / ~20 KB of JSON; pushing that repeatedly over BLE starved telemetry and started failing writes outright. It probes with `?after=4294967280` for the newest seq, then pulls a ~96-entry window.
@@ -264,7 +276,7 @@ A native Kotlin app for a phone on the handlebars: one screen of live values ove
 * **Service discovery must not depend on `onMtuChanged`.** Some stacks never deliver it even when `requestMtu()` returned true, so a 1.5 s fallback calls `discoverServices()` regardless. Discovery is guarded by a flag so a late callback cannot run it twice.
 * **Subscribing to notifications needs TWO calls, and the second one needs a value.** `setCharacteristicNotification(char, true)` only tells the local stack; the peripheral does not send anything until the client writes the CCCD (`00002902-…`) with `ENABLE_NOTIFICATION_VALUE`. `BluetoothGatt.writeDescriptor()` returns `false` outright when the descriptor's value is still null — which compiles perfectly and fails only on a real device, surfacing as *"Could not write the notification descriptor"*. The firmware side is `PROPERTY_NOTIFY` plus an explicit `BLE2902` in `BlePortal::begin()`; the comment there says it "lets the client enable notifications", which is exactly what this is. Set `cccd.value` before writing it.
 * **The PIN gate is the same one the web client uses.** The device answers exactly one request before authentication: `POST /api/auth`. A device with no PIN configured accepts `{}` and returns `pinRequired:false`, so the handshake is a no-op by default. A rejected PIN is deliberately **not** retried, because the firmware counts failures and locks the transport for 30 s after five.
-* **Stale data is shown as absent, not as a stale number.** Cadence / motor rpm / targets depend on the `0xEC` debug frame and render `--` when `hasTargetTelemetry` is false; the grade hero reads `--` until the barometer has produced a reading. The status line also names the failure — `Connected — no data for Ns` — because a frozen dashboard is precisely the failure mode this project has hit twice.
+* **Stale data is shown as absent, not as a stale number.** The altitude hero reads `--` until the middleman reports a barometer (`hasBaro`), and never falls back to the handset's own sensor — the two do not share a sea-level datum. There is no cadence or target display: bbs-fw stopped emitting the frame that carried them. The status line also names the failure — `Connected — no data for Ns` — because a frozen dashboard is precisely the failure mode this project has hit twice.
 * **`configChanges` on `MainActivity` is load-bearing.** The connection lives in the activity, so letting Android recreate it on rotation would drop the link — and a phone on the bars gets rotated. There is no foreground service, so backgrounding for a long time may cost the connection; reopening reconnects to the remembered MAC.
 * **Distribution is sideload-only by design.** No Play Store, account or review. **Android refuses an in-place update whose signing key changed**, so a rebuild elsewhere needs `adb uninstall com.bbshd.middleman` first. Do not commit a keystore — this repo is public.
 * **`user.home`, not `$HOME`, is what bites.** `sdkmanager` and AGP's debug-keystore lookup both resolve through Java's `user.home`; the two scripts redirect it. Details and symptoms in [`android/README.md`](file:///home/kyle/dev/bbs-hd-middleman/android/README.md).
@@ -281,19 +293,13 @@ A native Kotlin app for a phone on the handlebars: one screen of live values ove
 ├── android/               # Separate Gradle sub-project: native Android companion app
 │   ├── app/src/main/java/com/bbshd/middleman/
 │   │   ├── MainActivity.kt # Riding dashboard (plain framework views, no Compose)
-│   │   ├── BleClient.kt   # GATT scan/connect/framing/auth -- third copy of BleProtocol
+│   │   ├── BleClient.kt   # GATT scan/connect/framing/auth -- the client copy of BleProtocol
 │   │   └── Telemetry.kt   # /api/telemetry + /api/events parsing
 │   └── tools/             # setup-toolchain.sh (JDK+SDK+Gradle), build.sh
-├── .github/workflows/
-│   └── pages.yml          # Publishes web/ to GitHub Pages (the HTTPS/BLE copy)
 ├── tools/
-│   ├── embed_web.py       # Generates include/WebContent.h from web/index.html
-│   └── make_icons.py      # Generates the PWA icons in web/icons/
-├── web/                   # Hosted dashboard: served by GitHub Pages AND embedded below
-│   ├── index.html         # SINGLE SOURCE OF TRUTH for the dashboard SPA
-│   ├── manifest.webmanifest
-│   ├── sw.js              # Cache-first shell so the hosted copy opens offline
-│   └── icons/             # Generated by tools/make_icons.py
+│   └── embed_web.py       # Generates include/WebContent.h from web/index.html
+├── web/
+│   └── index.html         # Firmware-upload page only; embedded below
 ├── include/
 │   ├── Config.h           # Hardware pins, Wi-Fi credentials, timeouts, buffer sizes
 │   ├── ApiHandlers.h      # Transport-neutral ApiRequest/ApiResponse + route table
@@ -349,9 +355,9 @@ BLE is compiled in, controlled by `BLE_TRANSPORT_ENABLED` in [`Config.h`](file:/
 ### OTA (Over-the-Air) Update
 Firmware upload works **only over the on-device HTTP page**, and that is deliberate.
 
-* The dashboard's Firmware tab POSTs the raw `.bin` to `/update`, registered separately from the API routes (`_server.on("/update", HTTP_POST, handleOtaComplete, handleOtaUpload)`). The raw handler streams into `Update.begin()` / `Update.write()` / `Update.end(true)` and reboots.
-* `/update` is **not** in `API_ROUTES` and must not be. A ~1.5 MB body has no place in the BLE request/response framing (`BLE_MAX_FRAME_BODY` is 6144), and the hosted page cannot reach `http://192.168.4.1` anyway — an HTTPS page XHR-ing a plain-HTTP address is mixed content.
-* The hosted copy therefore shows a notice instead of the upload controls (`initOtaGate()` in `web/index.html`, gated on `isHostedCopy()`), and `startOtaUpload()` refuses as a backstop. To flash from a phone: join `BBS-FW-Middleman` and use `http://192.168.4.1/`, or use `http://bbshd.local/` if the middleman is already on the LAN.
+* The web page POSTs the raw `.bin` to `/update`, registered separately from the API routes (`_server.on("/update", HTTP_POST, handleOtaComplete, handleOtaUpload)`). The raw handler streams into `Update.begin()` / `Update.write()` / `Update.end(true)` and reboots. The page is the *only* reason the HTTP server still serves anything human-readable.
+* `/update` is **not** in `API_ROUTES` and must not be. A ~1.5 MB body has no place in the BLE request/response framing (`BLE_MAX_FRAME_BODY` is 6144).
+* Flashing from a phone: join `BBS-FW-Middleman` and open `http://192.168.4.1/`, or `http://bbshd.local/` on the LAN. From a computer, `curl --data-binary @firmware.bin http://bbshd.local/update` does the same without the page.
 * If BLE-streamed OTA or OTA-from-URL is ever added, keep the upload path out of the JSON API and remember that the ~1.5 MB image takes roughly a minute or more over BLE.
 * **Recovery is already in place**: `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` plus `esp_ota_mark_app_valid_cancel_rollback()` at the end of `setup()`, on the dual `app0`/`app1` slots from `default_8MB.csv` (3.19 MB each). An upload that never reaches `Update.end()` leaves the running slot untouched; an image that crash-loops before marking itself valid rolls back on the next reset.
 
@@ -367,11 +373,11 @@ Firmware upload works **only over the on-device HTTP page**, and that is deliber
    Any new controller transactions that block the normal bridge MUST use the pattern in `sendAndReceiveController()`:
    * Keep servicing `processDisplayRxIntercept()` while waiting for controller bytes.
    * Synthesize immediate responses to display queries so the display never times out.
-4. **Zero External CDN Dependencies in Web Content**:
-   All CSS, JavaScript, and HTML in [`web/index.html`](file:///home/kyle/dev/bbs-hd-middleman/web/index.html) (and therefore the generated `include/WebContent.h`) must remain self-contained. Bikes are ridden in areas without internet connectivity. The hostname is only ever used for the optional GitHub Pages copy — the on-device dashboard must never fetch anything off-device.
+4. **Zero External Dependencies in Web Content**:
+   The upload page in [`web/index.html`](file:///home/kyle/dev/bbs-hd-middleman/web/index.html) (and therefore the generated `include/WebContent.h`) must remain self-contained: no CDN, no fonts, no PWA assets. It is served by the bike itself, usually with no internet in reach.
 5. **Never Dispatch an API Call From a Bluetooth Callback**:
    GATT callbacks run on the Bluedroid task. They may only append bytes to `BlePortal`'s ring and flip `_connected`; `BlePortal::process()` in `loop()` does the dispatch. Calling `WebPortal::dispatchApi()` (or touching the bridge) from a callback would race the main task and stall the BT stack.
 6. **Always Verify Compilation Before Finishing**:
    Always run `/home/kyle/.platformio/penv/bin/pio run` to verify that code builds cleanly with zero errors and zero warnings.
-7. **Changing the BLE Wire Format Means Three Edits, Not One**:
-   [`include/BleProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/include/BleProtocol.h) is the spec, and it is implemented three times: in [`src/BlePortal.cpp`](file:///home/kyle/dev/bbs-hd-middleman/src/BlePortal.cpp), in [`web/index.html`](file:///home/kyle/dev/bbs-hd-middleman/web/index.html), and in [`android/app/src/main/java/com/bbshd/middleman/BleClient.kt`](file:///home/kyle/dev/bbs-hd-middleman/android/app/src/main/java/com/bbshd/middleman/BleClient.kt). A UUID, header or push-kind change that misses one client fails silently at runtime — the browser says **BT: Unsupported** or the device never appears, with nothing in the serial log to say why. The Android app is not built by `pio run`, so it will not break the firmware build when it drifts.
+7. **Changing the BLE Wire Format Means Two Edits, Not One**:
+   [`include/BleProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/include/BleProtocol.h) is the spec; [`src/BlePortal.cpp`](file:///home/kyle/dev/bbs-hd-middleman/src/BlePortal.cpp) and [`android/app/src/main/java/com/bbshd/middleman/BleClient.kt`](file:///home/kyle/dev/bbs-hd-middleman/android/app/src/main/java/com/bbshd/middleman/BleClient.kt) implement it. A UUID, header or push-kind change that misses the app fails silently at runtime — the device never appears, with nothing in the serial log to say why. The app is not built by `pio run`, so it will not break the firmware build when it drifts.

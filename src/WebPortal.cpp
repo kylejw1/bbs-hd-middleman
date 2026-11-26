@@ -3,6 +3,8 @@
 #include <ESPmDNS.h>
 #include <string.h>
 
+#include "Dps310.h"   // Baro, for the altitude-forwarding endpoint
+
 WebPortal Portal;
 
 namespace {
@@ -55,6 +57,11 @@ void WebPortal::setupWifi() {
     _staSsid = _prefs.getString("sta_ssid", "");
     _staPass = _prefs.getString("sta_pass", "");
     _blePin = _prefs.getString("ble_pin", "");
+
+    // Altitude forwarding is off unless it was explicitly turned on: it costs
+    // 92 ms of a 1200-baud bus per sample, so it should never surprise someone
+    // by defaulting to on.
+    Bridge.setAltitudeSending(_prefs.getBool("alt_send", false));
     _staConfigured = (_staSsid.length() > 0);
 
     _apActive = false;
@@ -355,6 +362,7 @@ bool WebPortal::dispatchApi(const ApiRequest& req, ApiResponse& out) {
         case ApiRouteId::CmdMode:          handleCmdMode();          break;
         case ApiRouteId::CmdLights:        handleCmdLights();        break;
         case ApiRouteId::AutoAssist:       handleAutoAssist();       break;
+        case ApiRouteId::Altitude:         handleAltitude();         break;
         case ApiRouteId::WifiConfig:       handleWifiConfig();       break;
         case ApiRouteId::Info:             handleInfo();             break;
         case ApiRouteId::SerialTrace:      handleSerialTrace();      break;
@@ -429,6 +437,66 @@ void WebPortal::handleBlePin() {
     sendApi(200, "application/json", out);
 }
 
+/**
+ * Altitude forwarding to bbs-fw: GET reports the state, POST {"enabled":bool}
+ * changes it and persists the choice.
+ *
+ * The GET also reports whether a barometer is actually fitted and how fast it is
+ * sampling, because an enabled checkbox with no sensor produces silence on the
+ * bus and nothing on the dashboard to explain it.
+ */
+void WebPortal::handleAltitude() {
+    if (!_apiIsPost) {
+        JsonDocument doc;
+        doc["enabled"] = Bridge.isAltitudeSending();
+        doc["baro"] = Baro.isPresent();
+        if (Baro.isPresent()) {
+            doc["altitudeM"] = serialized(String(Baro.sample().altitudeM, 1));
+            doc["pressureHpa"] = serialized(String(Baro.sample().pressureHpa, 2));
+            doc["rateHz"] = serialized(String(Baro.sampleRateHz(), 1));
+        }
+        String out;
+        serializeJson(doc, out);
+        sendApi(200, "application/json", out);
+        return;
+    }
+
+    if (!_apiBody) {
+        sendApi(400, "application/json", "{\"error\":\"Missing body\"}");
+        return;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, *_apiBody)) {
+        sendApi(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+        return;
+    }
+
+    if (!doc["enabled"].is<bool>()) {
+        sendApi(400, "application/json", "{\"error\":\"Expected {\\\"enabled\\\": true|false}\"}");
+        return;
+    }
+
+    const bool enabled = doc["enabled"].as<bool>();
+
+    // Refuse to turn it on with no sensor: nothing would be sent, and the
+    // dashboard would show an on checkbox next to a bike doing nothing.
+    if (enabled && !Baro.isPresent()) {
+        sendApi(409, "application/json", "{\"error\":\"No barometer detected\"}");
+        return;
+    }
+
+    Bridge.setAltitudeSending(enabled);
+    _prefs.putBool("alt_send", enabled);
+
+    JsonDocument resp;
+    resp["success"] = true;
+    resp["enabled"] = enabled;
+    String out;
+    serializeJson(resp, out);
+    sendApi(200, "application/json", out);
+}
+
 void WebPortal::handleRoot() {
     _server.send_P(200, "text/html", INDEX_HTML);
 }
@@ -491,11 +559,21 @@ void WebPortal::handlePostConfig() {
     // The controller's detected version is authoritative. Refuse a payload built
     // for a different layout (e.g. a v6 JSON profile imported while connected to a
     // v5 controller) rather than zeroing the mismatched fields.
+    // "v6 or newer" counts as valid: bbs-fw bumps CONFIG_VERSION to force a
+    // reinit, not to change the struct, so a v8 controller still speaks the
+    // 174-byte layout. Testing for 4/5/6 exactly coerced 8 down to 5 here and
+    // rejected every write with a bogus "controller is v5".
+    auto knownVersion = [](uint8_t v) {
+        return v >= BBS_FW_CONFIG_VERSION_6 ||
+               v == BBS_FW_CONFIG_VERSION ||
+               v == BBS_FW_CONFIG_VERSION_4;
+    };
+
     uint8_t ver = Bridge.getConfigVersion();
-    if (ver != BBS_FW_CONFIG_VERSION_6 && ver != BBS_FW_CONFIG_VERSION && ver != BBS_FW_CONFIG_VERSION_4) {
+    if (!knownVersion(ver)) {
         ver = (uint8_t)(doc["configVersion"] | BBS_FW_CONFIG_VERSION);
     }
-    if (ver != BBS_FW_CONFIG_VERSION_6 && ver != BBS_FW_CONFIG_VERSION && ver != BBS_FW_CONFIG_VERSION_4) {
+    if (!knownVersion(ver)) {
         ver = BBS_FW_CONFIG_VERSION;
     }
 

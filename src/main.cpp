@@ -133,10 +133,55 @@ void setup() {
     esp_ota_mark_app_valid_cancel_rollback();
 }
 
+/**
+ * Forward the barometer's altitude to the controller, at a fixed cadence.
+ *
+ * bbs-fw pairs each sample with its own wheel-tick and timestamp counters and
+ * works the grade out itself, so all this has to do is hand over a height and
+ * be regular about it. 5 Hz fills its 4 s window with 20 samples, which is
+ * plenty, and keeps the 11-byte frame (92 ms of a 1200-baud bus) to under half
+ * the available time.
+ *
+ * The value is sent relative to a baseline taken at boot, because the firmware
+ * stores it as int16_t centimetres: absolute altitude would overflow instantly.
+ * Only differences are used, and a ride stays well inside +/-320 m of where it
+ * started.
+ */
+static void feedAltitudeToController() {
+    static constexpr uint32_t SEND_INTERVAL_MS = 200;
+    static uint32_t lastSendMs = 0;
+    static float    baselineM = 0.0f;
+    static bool     haveBaseline = false;
+
+    if (!Bridge.isAltitudeSending() || !Baro.isPresent()) return;
+
+    const Dps310::Sample& s = Baro.sample();
+    if (s.pressureHpa <= 0.0f) return;   // no valid reading yet
+
+    if (!haveBaseline) {
+        baselineM = s.altitudeM;
+        haveBaseline = true;
+        Serial.printf("[BARO] altitude baseline %.1f m\n", (double)baselineM);
+    }
+
+    const uint32_t now = millis();
+    if (now - lastSendMs < SEND_INTERVAL_MS) return;
+
+    const int32_t cm = (int32_t)lroundf((s.altitudeM - baselineM) * 100.0f);
+    if (Bridge.sendAltitude(cm, now)) {
+        lastSendMs = now;
+    }
+    // If it was refused (bus busy, display mid-frame, config transaction) it is
+    // simply retried on the next pass -- better a sample slightly late than two
+    // frames colliding.
+}
+
 void loop() {
     // 1. Process dual serial bridge (transparent pass-through & keep-alive synthesizer)
     Bridge.process();
     Baro.process();
+
+    feedAltitudeToController();
 
     // 2. Process web server and DNS captive portal
     Portal.process();

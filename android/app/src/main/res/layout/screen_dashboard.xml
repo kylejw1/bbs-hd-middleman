@@ -78,29 +78,7 @@
             android:paddingTop="2dp"
             android:paddingBottom="6dp">
 
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:gravity="center_horizontal"
-                android:orientation="vertical">
-                <TextView
-                    android:id="@+id/cadenceValue"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:fontFamily="monospace"
-                    android:text="@string/dash"
-                    android:textColor="@color/fg"
-                    android:textSize="54sp" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:letterSpacing="0.15"
-                    android:text="@string/label_cadence"
-                    android:textColor="@color/dim"
-                    android:textSize="10sp" />
-            </LinearLayout>
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -127,18 +105,42 @@
             </LinearLayout>
         </LinearLayout>
 
+        <!-- Altitude from the bike's DPS310, or the phone's barometer when the
+             bike has none. A hero rather than a grid cell: it is the value the
+             grade is derived from, so it should be readable at a glance the way
+             speed and slope are. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:paddingTop="2dp"
+            android:paddingBottom="8dp">
+
+            <TextView
+                android:id="@+id/altitudeValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:text="@string/dash"
+                android:textColor="@color/fg"
+                android:textSize="44sp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:letterSpacing="0.15"
+                android:text="@string/label_altitude_m"
+                android:textColor="@color/dim"
+                android:textSize="10sp" />
+        </LinearLayout>
+
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
             android:background="@color/line" />
 
-        <!-- Cadence / target-current curve. Mirrors computePasTargetCurrent() in
-             web/index.html; the marker is where the rider is right now. -->
-        <com.bbshd.middleman.PulseCurveView
-            android:id="@+id/curveView"
-            android:layout_width="match_parent"
-            android:layout_height="136dp"
-            android:layout_marginTop="4dp" />
+
 
         <!-- Phone-sensor hill assist. The checkbox gates everything: off means the
              middleman is never told about an override at all. -->
@@ -204,6 +206,39 @@
             </LinearLayout>
 
 
+        </LinearLayout>
+
+        <!-- Altitude forwarding. The middleman measures the height; the
+             controller does the grade. Off by default because it costs 92 ms of
+             a 1200-baud bus per sample, so this is the switch that spends it. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingTop="2dp"
+            android:paddingBottom="4dp">
+
+            <CheckBox
+                android:id="@+id/sendAltitudeCheck"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/send_altitude"
+                android:textColor="@color/fg"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/sendAltitudeState"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/dash"
+                android:textColor="@color/dim"
+                android:textSize="12sp" />
         </LinearLayout>
 
         <View

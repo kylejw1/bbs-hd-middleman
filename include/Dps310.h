@@ -71,6 +71,7 @@ private:
     float    _rateHz = 0.0f;
 
     uint32_t _lastPollMs = 0;
+    uint32_t _lastProbeMs = 0;
     uint32_t _lastSampleMs = 0;
     uint32_t _sampleCount = 0;
 };

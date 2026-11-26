@@ -50,6 +50,15 @@ public:
     void injectLights(bool on);
     void injectOperationMode(uint8_t mode);
 
+    // Altitude forwarding to bbs-fw. The controller computes the grade itself
+    // from these samples (opcode 0xf4), against its own wheel-tick counter, so
+    // the middleman only has to supply height in centimetres and get out of the
+    // way. Disabled by default: it puts an 11-byte frame on a 1200-baud bus,
+    // which is 92 ms of a bus the display is also using.
+    void setAltitudeSending(bool on);
+    bool isAltitudeSending() const { return _altitudeSending; }
+    bool sendAltitude(int32_t altitudeCm, uint32_t epochMs);
+
 
     // State getters
     BridgeState getState() const;
@@ -78,6 +87,13 @@ private:
     size_t   _writeLen = 0;
     size_t   _writeExpectedLen = 0;
     bool     _holdWrite = false;
+
+    // Altitude forwarding state. _controllerTxBusyUntilMs is when the last
+    // frame we wrote will have finished draining the UART: at 1200 baud a byte
+    // takes 8.33 ms, and two frames written back to back would arrive at the
+    // controller as one corrupt frame rather than two.
+    bool     _altitudeSending = false;
+    uint32_t _controllerTxBusyUntilMs = 0;
 
     // Controller RX parsing buffer
     uint8_t _controllerBuf[256];

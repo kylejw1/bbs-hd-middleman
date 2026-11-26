@@ -97,6 +97,7 @@ private:
     void handleCmdMode();
     void handleCmdLights();
     void handleAutoAssist();
+    void handleAltitude();
     void handleWifiConfig();
     void handleInfo();
     void handleSerialTrace();

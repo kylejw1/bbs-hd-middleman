@@ -41,7 +41,7 @@ bool Dps310::begin() {
 #if !DPS310_ENABLED
     return false;
 #else
-    Wire.begin(DPS310_SDA_PIN, DPS310_SCL_PIN, DPS310_I2C_HZ);
+    const bool busOk = Wire.begin(DPS310_SDA_PIN, DPS310_SCL_PIN, DPS310_I2C_HZ);
     Wire.setTimeOut(20);   // a missing sensor must never stall the 1200-baud bridge
 
     // Probe both possible addresses: SDO low gives 0x76, SDO high or floating 0x77.
@@ -54,8 +54,87 @@ bool Dps310::begin() {
         }
     }
     if (!_present) {
-        Serial.printf("[BARO] no DPS310 on SDA %d / SCL %d\n",
-                      DPS310_SDA_PIN, DPS310_SCL_PIN);
+        // Say WHY, not just that. "No sensor" covers a missing 3V3, a wire in
+        // the wrong hole, and a part sitting at an address we did not try --
+        // and a bus scan tells those apart in one glance.
+        Serial.printf("[BARO] no DPS310 on SDA %d / SCL %d (Wire.begin %s)\n",
+                      DPS310_SDA_PIN, DPS310_SCL_PIN, busOk ? "ok" : "FAILED");
+
+        Serial.print("[BARO] bus scan:");
+        int found = 0;
+        for (uint8_t a = 0x08; a < 0x78; a++) {
+            Wire.beginTransmission(a);
+            if (Wire.endTransmission() == 0) {
+                Serial.printf(" 0x%02X", a);
+                found++;
+            }
+        }
+        Serial.println(found == 0 ? " nothing answered" : "");
+
+        // Electrical check, made unambiguous: a floating input reads 1 on its own,
+        // so "reads high" proves nothing. Pull the pin LOW internally (45k) and
+        // read it: if an external 10k pull-up is present on the sensor board the
+        // node still sits near 3V3 and reads 1. If nothing is connected, the
+        // internal pull-down wins and it reads 0.
+        //
+        //   pull-down -> 1   external pull-up present: the sensor IS on this pin
+        //   pull-down -> 0   nothing pulling up: the wire is not reaching it
+        //   pull-up   -> 0   something is shorting the line to GND
+        Wire.end();
+        pinMode(DPS310_SDA_PIN, INPUT_PULLDOWN);
+        pinMode(DPS310_SCL_PIN, INPUT_PULLDOWN);
+        delay(5);
+        const int sdaDown = digitalRead(DPS310_SDA_PIN);
+        const int sclDown = digitalRead(DPS310_SCL_PIN);
+
+        pinMode(DPS310_SDA_PIN, INPUT_PULLUP);
+        pinMode(DPS310_SCL_PIN, INPUT_PULLUP);
+        delay(5);
+        const int sdaUp = digitalRead(DPS310_SDA_PIN);
+        const int sclUp = digitalRead(DPS310_SCL_PIN);
+
+        Serial.printf("[BARO] with internal pull-down: SDA=%d SCL=%d  "
+                      "(1 = external pull-up present, so the sensor is connected)\n",
+                      sdaDown, sclDown);
+        Serial.printf("[BARO] with internal pull-up:   SDA=%d SCL=%d  (0 = shorted to GND)\n",
+                      sdaUp, sclUp);
+        if (sdaDown == 0 && sclDown == 0) {
+            Serial.println("[BARO] no external pull-ups: the data wires are not "
+                           "reaching the sensor board");
+        } else if (sdaDown == 1 && sclDown == 1) {
+            Serial.println("[BARO] both lines pulled up externally: the sensor is "
+                           "wired and powered, so it is not answering as an I2C device");
+        }
+
+        // And try the two pins the other way round. Reversed wiring is invisible
+        // on a scan -- the sensor would be listening on the pin we call SCL.
+        Wire.begin(DPS310_SCL_PIN, DPS310_SDA_PIN, DPS310_I2C_HZ);
+        Wire.setTimeOut(20);
+        int swapped = 0;
+        Serial.print("[BARO] swapped scan (SDA ");
+        Serial.print(DPS310_SCL_PIN);
+        Serial.print(" / SCL ");
+        Serial.print(DPS310_SDA_PIN);
+        Serial.print("):");
+        for (uint8_t a = 0x08; a < 0x78; a++) {
+            Wire.beginTransmission(a);
+            if (Wire.endTransmission() == 0) {
+                Serial.printf(" 0x%02X", a);
+                swapped++;
+            }
+        }
+        Serial.println(swapped == 0 ? " nothing answered" : "");
+
+        Wire.end();
+        Wire.begin(DPS310_SDA_PIN, DPS310_SCL_PIN, DPS310_I2C_HZ);
+        Wire.setTimeOut(20);
+
+        if (found == 0) {
+            Serial.println("[BARO] nothing on the bus: check 3V3 and GND before the data pins");
+        } else {
+            Serial.println("[BARO] something is on the bus but not at 0x76/0x77 -- "
+                           "wrong part, or SDO strapped to something odd");
+        }
         return false;
     }
 
@@ -73,7 +152,17 @@ bool Dps310::begin() {
 }
 
 void Dps310::process() {
-    if (!_present) return;
+    if (!_present) {
+        // Keep trying. The sensor may be plugged in after boot, or a wire may be
+        // reseated while the bike sits there; requiring a power cycle to notice
+        // turns every wiring fix into a flash-and-pray cycle.
+        const uint32_t now = millis();
+        if (now - _lastProbeMs >= 5000) {
+            _lastProbeMs = now;
+            begin();
+        }
+        return;
+    }
 
     // Ask the part whether a new pressure conversion exists. The library's own
     // read does not check, so calling it on a timer returns duplicates and, at

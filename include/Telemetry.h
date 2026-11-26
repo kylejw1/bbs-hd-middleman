@@ -35,6 +35,12 @@ public:
     // against wheel speed.
     void updateBaro(float pressureHpa, float temperatureC, float altitudeM);
     void updateSlopePercent(float percent);
+
+    // Grade computed by bbs-fw and reported back over the serial link, in
+    // permille (1000 x dh/ds). Absent until a frame arrives.
+    void updateBikeSlope(int16_t permille);
+    bool  hasBikeSlope() const;
+    int16_t getBikeSlopePermille() const;
     float getCachedPressureHpa() const;
     float getCachedBaroTempC() const;
     float getCachedBaroAltitudeM() const;
@@ -45,8 +51,6 @@ public:
     void updateLights(bool on);
     void updateStatusCode(uint8_t code);
     void updateTemperature(int8_t controllerC, int8_t motorC);
-    void updateTargetTelemetry(uint8_t targetCurrentPercent, uint8_t targetSpeedPercent,
-                               uint16_t cadenceRpmX10, uint16_t motorRpmX10);
     void updateFirmwareInfo(uint8_t major, uint8_t minor, uint8_t patch, uint8_t cfgVer, ControllerType type);
 
     // Activity tracking
@@ -76,17 +80,9 @@ public:
     bool getCachedLights() const;
     uint8_t getCachedOperationMode() const;
 
-    // Direct target-telemetry getters (from the 0xEC debug frame).
-    // All return 0 when hasTargetTelemetry() is false.
-    uint8_t  getCachedTargetCurrentPct() const;
-    uint8_t  getCachedTargetSpeedPct() const;
-    uint16_t getCachedCadenceRpmX10() const;    // RPM × 10
-    uint16_t getCachedMotorRpmX10() const;      // RPM × 10
-
     // Check connectivity
     bool isDisplayActive() const;
     bool isControllerActive() const;
-    bool hasTargetTelemetry() const;
 
     // JSON builders for Web API
     void buildTelemetryJson(JsonDocument& doc);
@@ -117,16 +113,11 @@ private:
     float    _baroAltitudeM;
     float    _slopePercent;
     float    _slopeMultiplier;
+
+    int16_t  _bikeSlopePermille;
+    uint32_t _lastBikeSlopeMs;
     uint32_t _lastBaroMs;
     uint32_t _lastVehicleDataMs;
-
-    // Live bbs-fw motor targets (from the 0xEC debug telemetry frame)
-    bool _hasTargetTelemetry;
-    uint32_t _lastTargetTelemetryMs;
-    uint8_t _targetCurrentPercent;
-    uint8_t _targetSpeedPercent;
-    uint16_t _cadenceRpmX10;
-    uint16_t _motorRpmX10;
 
     // Controller details
     uint8_t _fwMajor;

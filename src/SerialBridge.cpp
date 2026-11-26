@@ -333,26 +333,21 @@ void SerialBridge::processControllerRxPassThrough() {
             _controllerBuf[_controllerBufLen++] = byteVal;
         }
 
-        // Multi-value debug telemetry frame (0xEC): target current %, target
-        // speed %, cadence rpm x10, motor rpm x10. Swallowed like the other
-        // event frames.
-        if (_controllerBufLen >= 1 && _controllerBuf[0] == EVENT_LOG_TELEMETRY_ENTRY) {
-            if (_controllerBufLen >= EVENT_LOG_TELEMETRY_SIZE) {
-                if (verifyChecksum(_controllerBuf, EVENT_LOG_TELEMETRY_SIZE)) {
-                    uint16_t cadenceX10 = (uint16_t)((_controllerBuf[3] << 8) | _controllerBuf[4]);
-                    uint16_t motorRpmX10 = (uint16_t)((_controllerBuf[5] << 8) | _controllerBuf[6]);
-                    Telemetry.updateTargetTelemetry(_controllerBuf[1], _controllerBuf[2], cadenceX10, motorRpmX10);
+        // Slope frame from bbs-fw: the controller computes the grade, this is it
+        // coming back. Swallowed so the display never sees a frame it cannot
+        // parse, exactly like the event frames below.
+        if (_controllerBufLen >= 1 && _controllerBuf[0] == EVENT_LOG_SLOPE_ENTRY) {
+            if (_controllerBufLen >= EVENT_LOG_SLOPE_SIZE) {
+                if (verifyChecksum(_controllerBuf, EVENT_LOG_SLOPE_SIZE)) {
+                    const int16_t permille = (int16_t)((_controllerBuf[1] << 8) | _controllerBuf[2]);
+                    Telemetry.updateBikeSlope(permille);
                     Telemetry.recordIntercept();
-                    Debug.tracef("Telemetry: target %d%%, speed %d%%, cadence %d.%d rpm, motor %d.%d rpm",
-                                 _controllerBuf[1], _controllerBuf[2],
-                                 cadenceX10 / 10, cadenceX10 % 10,
-                                 motorRpmX10 / 10, motorRpmX10 % 10);
+                    Debug.tracef("Slope frame: %d permille", permille);
                 }
                 _controllerBufLen = 0;
                 continue;
             }
-            // Still waiting for remaining telemetry bytes, do not forward yet
-            continue;
+            continue;   // still arriving
         }
 
         // Check if this is an Event Log frame from bbs-fw
@@ -651,19 +646,12 @@ void SerialBridge::flushQueuedDisplayWrites() {
 // into telemetry) rather than counted as the transaction response, otherwise a
 // write gets "checksum mismatch" and fails even though the controller accepted it.
 // Frame shapes: 0xEE <id> <chk> (3), 0xED <id> <hi> <lo> <chk> (5),
-// 0xEC <cur> <spd> <cad_hi> <cad_lo> <mot_hi> <mot_lo> <tau_hi> <tau_lo>
-//      <bias_hi> <bias_lo> <flags> <chk> (13).
-// `firstByte` is already consumed.
+// 0xEA <permille hi> <lo> <chk> (4). `firstByte` is already consumed.
 bool SerialBridge::consumeControllerEventFrame(uint8_t firstByte, uint32_t deadlineMs) {
-    size_t evtSize;
-    if (firstByte == EVENT_LOG_ENTRY) {
-        evtSize = 3;
-    } else if (firstByte == EVENT_LOG_DATA_ENTRY) {
-        evtSize = 5;
-    } else {
-        evtSize = EVENT_LOG_TELEMETRY_SIZE;
-    }
-    uint8_t frame[EVENT_LOG_TELEMETRY_SIZE];
+    const size_t evtSize = (firstByte == EVENT_LOG_ENTRY) ? 3
+                         : (firstByte == EVENT_LOG_SLOPE_ENTRY) ? EVENT_LOG_SLOPE_SIZE
+                         : 5;
+    uint8_t frame[5];
     frame[0] = firstByte;
     size_t n = 1;
 
@@ -693,14 +681,10 @@ bool SerialBridge::consumeControllerEventFrame(uint8_t firstByte, uint32_t deadl
         return true;  // garbled frame consumed; keep waiting for the response
     }
 
-    if (firstByte == EVENT_LOG_TELEMETRY_ENTRY) {
-        uint16_t cadenceX10 = (uint16_t)((frame[3] << 8) | frame[4]);
-        uint16_t motorRpmX10 = (uint16_t)((frame[5] << 8) | frame[6]);
-        Telemetry.updateTargetTelemetry(frame[1], frame[2], cadenceX10, motorRpmX10);
+    if (firstByte == EVENT_LOG_SLOPE_ENTRY) {
+        Telemetry.updateBikeSlope((int16_t)((frame[1] << 8) | frame[2]));
         Telemetry.recordIntercept();
-        Debug.tracef("Telemetry during config: target %d%%, speed %d%%, cadence %d.%d rpm, motor %d.%d rpm",
-                     frame[1], frame[2], cadenceX10 / 10, cadenceX10 % 10,
-                     motorRpmX10 / 10, motorRpmX10 % 10);
+        Debug.trace("Slope frame intercepted during config");
         return true;
     }
 
@@ -733,7 +717,7 @@ bool SerialBridge::receiveController(uint8_t* buf, size_t len, uint32_t timeoutM
             // At a frame boundary an async event-log or telemetry frame may be
             // interleaved with the response we are waiting for.
             if (received == 0 && (byteVal == EVENT_LOG_ENTRY || byteVal == EVENT_LOG_DATA_ENTRY ||
-                                  byteVal == EVENT_LOG_TELEMETRY_ENTRY)) {
+                                  byteVal == EVENT_LOG_SLOPE_ENTRY)) {
                 if (!consumeControllerEventFrame(byteVal, deadlineMs)) {
                     return false;
                 }
@@ -888,7 +872,11 @@ bool SerialBridge::readConfig(BbsFwConfig& config, uint32_t timeoutMs) {
         _configVersion = ver;
         Debug.tracef("readConfig header: ver=%d len=%d", ver, len);
 
-        bool knownLen = (ver == BBS_FW_CONFIG_VERSION_6 && len == BBS_FW_CONFIG_V6_SIZE) ||
+        // v6 and anything newer share the 174-byte layout: bbs-fw bumps
+        // CONFIG_VERSION to force a reinit, not to reshape the struct, so
+        // treating an unknown-but-newer version as v6 is what keeps a device
+        // readable across those bumps.
+        bool knownLen = (ver >= BBS_FW_CONFIG_VERSION_6 && len == BBS_FW_CONFIG_V6_SIZE) ||
                         (ver == BBS_FW_CONFIG_VERSION && len == BBS_FW_CONFIG_V5_SIZE) ||
                         (ver == BBS_FW_CONFIG_VERSION_4 && len == BBS_FW_CONFIG_V4_SIZE);
         size_t total = 4 + (size_t)len + 1; // header + payload + checksum
@@ -901,7 +889,7 @@ bool SerialBridge::readConfig(BbsFwConfig& config, uint32_t timeoutMs) {
                 ok = verifyChecksum(frame, total);
                 if (ok) {
                     config.version = ver;
-                    if (ver == BBS_FW_CONFIG_VERSION_6) {
+                    if (ver >= BBS_FW_CONFIG_VERSION_6) {
                         memcpy(&config.v6, frame + 4, BBS_FW_CONFIG_V6_SIZE);
                     } else if (ver == BBS_FW_CONFIG_VERSION_4) {
                         BbsFwConfigV4 v4;
@@ -948,7 +936,7 @@ bool SerialBridge::writeConfig(const BbsFwConfig& config, uint32_t timeoutMs) {
     // The controller only accepts its own config version: V6 (174 bytes), V5
     // (154 bytes) or the legacy V4 (152 bytes).
     uint8_t targetVersion = _configVersion;
-    if (targetVersion != BBS_FW_CONFIG_VERSION_6 &&
+    if (targetVersion < BBS_FW_CONFIG_VERSION_6 &&
         targetVersion != BBS_FW_CONFIG_VERSION &&
         targetVersion != BBS_FW_CONFIG_VERSION_4) {
         targetVersion = config.version;  // version unknown: trust the caller
@@ -958,8 +946,8 @@ bool SerialBridge::writeConfig(const BbsFwConfig& config, uint32_t timeoutMs) {
     size_t cfgSize;
     uint8_t txBuf[4 + BBS_FW_CONFIG_V6_SIZE + 1]; // max V6 frame
 
-    if (targetVersion == BBS_FW_CONFIG_VERSION_6) {
-        ver = BBS_FW_CONFIG_VERSION_6;
+    if (targetVersion >= BBS_FW_CONFIG_VERSION_6) {
+        ver = targetVersion;   // echo back whatever the controller reported
         cfgSize = BBS_FW_CONFIG_V6_SIZE;
         memcpy(txBuf + 4, &config.v6, BBS_FW_CONFIG_V6_SIZE);
     } else if (targetVersion == BBS_FW_CONFIG_VERSION_4) {
@@ -1106,6 +1094,70 @@ void SerialBridge::injectOperationMode(uint8_t mode) {
 
     _controllerSerial.write(pkt, 4);
     Telemetry.updateOperationMode(mode);
+}
+
+void SerialBridge::setAltitudeSending(bool on) {
+    if (on == _altitudeSending) return;
+    _altitudeSending = on;
+    Serial.printf("[BRIDGE] altitude forwarding %s\n", on ? "enabled" : "disabled");
+}
+
+/**
+ * Hand one altitude sample to the controller (bbs-fw computes the grade itself).
+ *
+ * Returns false when the sample was not sent, so the caller can retry next
+ * iteration rather than firing twice and corrupting the frame.
+ *
+ * Three gates, all of which matter at 1200 baud:
+ *
+ *  - not while a config transaction is running: that code owns the controller's
+ *    UART and expects its own replies;
+ *  - not while a display write is sitting half-forwarded (_holdWrite), or our
+ *    bytes would land in the middle of the display's frame;
+ *  - not until our previous frame has finished draining. Eleven bytes take
+ *    92 ms, and HardwareSerial buffers, so write() returns long before the
+ *    controller has seen them.
+ *
+ * The display's own queries are safe during our transmission: they queue behind
+ * it in the same UART, so the controller sees our whole frame first and the
+ * display's query after -- two complete frames, in order.
+ */
+bool SerialBridge::sendAltitude(int32_t altitudeCm, uint32_t epochMs) {
+    if (!_altitudeSending) return false;
+    if (_state != BridgeState::PASS_THROUGH) return false;
+    if (_holdWrite) return false;
+
+    const uint32_t now = millis();
+    if ((int32_t)(now - _controllerTxBusyUntilMs) < 0) return false;
+    if (now - _lastDisplayByteMs < 40) return false;   // display frame in flight
+
+    // bbs-fw keeps the sample as int16_t, so anything beyond this range would
+    // silently wrap and drag the grade the wrong way.
+    if (altitudeCm > 32000) altitudeCm = 32000;
+    if (altitudeCm < -32000) altitudeCm = -32000;
+
+    uint8_t pkt[PRESSURE_FRAME_SIZE];
+    pkt[0] = REQUEST_TYPE_WRITE;
+    pkt[1] = OPCODE_WRITE_PRESSURE;
+    pkt[2] = (uint8_t)(epochMs >> 24);
+    pkt[3] = (uint8_t)(epochMs >> 16);
+    pkt[4] = (uint8_t)(epochMs >> 8);
+    pkt[5] = (uint8_t)(epochMs);
+
+    const uint32_t v = (uint32_t)altitudeCm;
+    pkt[6] = (uint8_t)(v >> 24);
+    pkt[7] = (uint8_t)(v >> 16);
+    pkt[8] = (uint8_t)(v >> 8);
+    pkt[9] = (uint8_t)(v);
+
+    pkt[10] = computeChecksum(pkt, PRESSURE_FRAME_SIZE - 1);
+
+    _controllerSerial.write(pkt, PRESSURE_FRAME_SIZE);
+    Telemetry.recordControllerTx(PRESSURE_FRAME_SIZE);
+
+    // 10 bits per byte at 1200 baud is 8.33 ms; add a byte of slack.
+    _controllerTxBusyUntilMs = now + (uint32_t)(PRESSURE_FRAME_SIZE * 9);
+    return true;
 }
 
 

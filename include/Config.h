@@ -186,7 +186,12 @@
 #define DPS310_SCL_PIN      14
 #endif
 #ifndef DPS310_I2C_HZ
-#define DPS310_I2C_HZ       400000
+// 100 kHz, not 400. The DPS310 breakout's pull-ups are 10k, and with a few tens
+// of centimetres of wire the rise time is ~2 us -- seven times the 300 ns budget
+// at 400 kHz, so the part never sees valid clocks and the bus scans as empty
+// while everything still measures fine with a meter. This is also the speed the
+// bench test ran at, where the same sensor answered.
+#define DPS310_I2C_HZ       100000
 #endif
 
 #endif // CONFIG_H

@@ -27,14 +27,10 @@ TelemetryTracker::TelemetryTracker()
     , _baroAltitudeM(0.0f)
     , _slopePercent(0.0f)
     , _slopeMultiplier(1.0f)
+    , _bikeSlopePermille(0)
+    , _lastBikeSlopeMs(0)
     , _lastBaroMs(0)
     , _lastVehicleDataMs(0)
-    , _hasTargetTelemetry(false)
-    , _lastTargetTelemetryMs(0)
-    , _targetCurrentPercent(0)
-    , _targetSpeedPercent(0)
-    , _cadenceRpmX10(0)
-    , _motorRpmX10(0)
     , _fwMajor(0)
     , _fwMinor(0)
     , _fwPatch(0)
@@ -111,6 +107,22 @@ void TelemetryTracker::updateBatteryVoltage(float volts) {
     }
 }
 
+void TelemetryTracker::updateBikeSlope(int16_t permille) {
+    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        _bikeSlopePermille = permille;
+        _lastBikeSlopeMs = millis();
+        xSemaphoreGive(_mutex);
+    }
+}
+
+bool TelemetryTracker::hasBikeSlope() const {
+    return _lastBikeSlopeMs != 0 && (millis() - _lastBikeSlopeMs < 4000);
+}
+
+int16_t TelemetryTracker::getBikeSlopePermille() const {
+    return _bikeSlopePermille;
+}
+
 void TelemetryTracker::updateBaro(float pressureHpa, float temperatureC, float altitudeM) {
     if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         _baroPressureHpa = pressureHpa;
@@ -171,19 +183,6 @@ void TelemetryTracker::updateTemperature(int8_t controllerC, int8_t motorC) {
     if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         _controllerTempC = controllerC;
         _motorTempC = motorC;
-        xSemaphoreGive(_mutex);
-    }
-}
-
-void TelemetryTracker::updateTargetTelemetry(uint8_t targetCurrentPercent, uint8_t targetSpeedPercent,
-                                             uint16_t cadenceRpmX10, uint16_t motorRpmX10) {
-    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        _targetCurrentPercent = targetCurrentPercent;
-        _targetSpeedPercent = targetSpeedPercent;
-        _cadenceRpmX10 = cadenceRpmX10;
-        _motorRpmX10 = motorRpmX10;
-        _hasTargetTelemetry = true;
-        _lastTargetTelemetryMs = millis();
         xSemaphoreGive(_mutex);
     }
 }
@@ -297,37 +296,12 @@ uint8_t TelemetryTracker::getCachedOperationMode() const {
     return _operationMode;
 }
 
-uint8_t TelemetryTracker::getCachedTargetCurrentPct() const {
-    return _targetCurrentPercent;
-}
-
-uint8_t TelemetryTracker::getCachedTargetSpeedPct() const {
-    return _targetSpeedPercent;
-}
-
-uint16_t TelemetryTracker::getCachedCadenceRpmX10() const {
-    return _cadenceRpmX10;
-}
-
-uint16_t TelemetryTracker::getCachedMotorRpmX10() const {
-    return _motorRpmX10;
-}
-
 bool TelemetryTracker::isDisplayActive() const {
     return (millis() - _lastDisplayRxMs) < 2500;
 }
 
 bool TelemetryTracker::isControllerActive() const {
     return (millis() - _lastControllerRxMs) < 2500;
-}
-
-bool TelemetryTracker::hasTargetTelemetry() const {
-    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        bool active = _hasTargetTelemetry && (millis() - _lastTargetTelemetryMs < 4000);
-        xSemaphoreGive(_mutex);
-        return active;
-    }
-    return false;
 }
 
 void TelemetryTracker::buildTelemetryJson(JsonDocument& doc) {
@@ -346,14 +320,9 @@ void TelemetryTracker::buildTelemetryJson(JsonDocument& doc) {
         doc["controllerTempC"] = _controllerTempC;
         doc["motorTempC"] = _motorTempC;
 
-        // Live bbs-fw targets, pushed from the firmware's 0xEC debug frame.
-        bool targetFresh = _hasTargetTelemetry && (millis() - _lastTargetTelemetryMs < 4000);
-        doc["hasTargetTelemetry"] = targetFresh;
-        doc["targetCurrentPercent"] = targetFresh ? _targetCurrentPercent : 0;
-        doc["targetSpeedPercent"] = targetFresh ? _targetSpeedPercent : 0;
-        doc["cadenceRpm"] = serialized(String(targetFresh ? (_cadenceRpmX10 / 10.0f) : 0.0f, 1));
-        doc["motorRpm"] = serialized(String(targetFresh ? (_motorRpmX10 / 10.0f) : 0.0f, 1));
-
+        // No motor targets or cadence: bbs-fw stopped emitting the 0xEC debug
+        // frame (commit 30f97cb), and the display protocol never carried them.
+        // The firmware is the reference, so these are gone rather than faked.
 
         // True while speed/voltage/battery are actually being measured -- by a
         // display, or by this bridge polling for them. The app uses it to decide
@@ -370,6 +339,13 @@ void TelemetryTracker::buildTelemetryJson(JsonDocument& doc) {
         // The multiplier the slope implies, 1 + slope% x 5. Published, not acted
         // on: this build never changes the assist level.
         doc["slopeMultiplier"] = serialized(String(baroOk ? _slopeMultiplier : 1.0f, 3));
+
+        // The controller's own grade, once a second. Separate from the local one
+        // above: this is what bbs-fw computed from the altitude samples it was
+        // fed, and it is the only number that reflects the controller's view.
+        const bool bikeSlopeOk = _lastBikeSlopeMs != 0 && (millis() - _lastBikeSlopeMs < 4000);
+        doc["hasBikeSlope"] = bikeSlopeOk;
+        doc["bikeSlopePermille"] = bikeSlopeOk ? _bikeSlopePermille : 0;
 
         doc["hasVehicleData"] = (millis() - _lastVehicleDataMs < 5000);
         doc["displayConnected"] = isDisplayActive();

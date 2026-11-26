@@ -24,8 +24,18 @@ constexpr uint8_t OPCODE_WRITE_EVTLOG_ENABLE    = 0xf0;
 constexpr uint8_t OPCODE_WRITE_CONFIG           = 0xf1;
 constexpr uint8_t OPCODE_WRITE_RESET_CONFIG     = 0xf2;
 constexpr uint8_t OPCODE_WRITE_ADC_VOLTAGE_CALIBRATION = 0xf3;
-constexpr uint8_t OPCODE_WRITE_INCLINATION          = 0xf4;
-constexpr size_t  INCLINATION_FRAME_SIZE            = 7;
+
+// Altitude sample, consumed by app_push_pressure() in the bbs-fw fork. No
+// response is sent for this one -- the controller swallows it and feeds it to
+// the slope calculation, which differences samples against its own wheel ticks.
+//
+//   0x02, 0xf4, <epoch u32 BE>, <altitude_cm i32 BE>, <checksum>
+//
+// Altitude is CENTIMETRES (metres x 100). The firmware stores it as int16_t, so
+// the value must stay within +/-32767 cm -- send it relative to a baseline, not
+// as an absolute altitude.
+constexpr uint8_t OPCODE_WRITE_PRESSURE        = 0xf4;
+constexpr size_t  PRESSURE_FRAME_SIZE          = 11;
 
 // Bafang standard display opcodes
 constexpr uint8_t OPCODE_DISPLAY_READ_STATUS    = 0x08;
@@ -46,13 +56,10 @@ constexpr uint8_t OPCODE_DISPLAY_WRITE_SPEED_LIM= 0x1f;
 // Event Log frame types
 constexpr uint8_t EVENT_LOG_ENTRY               = 0xee;
 constexpr uint8_t EVENT_LOG_DATA_ENTRY          = 0xed;
-// Multi-value debug telemetry (bbs-fw 0xEC): header, target current %,
-// target speed %, cadence rpm x10 (hi/lo), motor rpm x10 (hi/lo), checksum.
-// The virtual load sensor torque/bias/flags that briefly extended this frame
-// were removed from the firmware, so it is back to 8 bytes.
-constexpr uint8_t EVENT_LOG_TELEMETRY_ENTRY     = 0xec;
-constexpr size_t  EVENT_LOG_TELEMETRY_SIZE      = 8;
-
+// Dedicated slope frame emitted by bbs-fw roughly once a second:
+// 0xEA <grade permille hi> <lo> <checksum>. Swallowed like the event frames.
+constexpr uint8_t EVENT_LOG_SLOPE_ENTRY         = 0xea;
+constexpr size_t  EVENT_LOG_SLOPE_SIZE          = 4;
 // Assist Flags
 constexpr uint8_t ASSIST_FLAG_PAS               = 0x01;
 constexpr uint8_t ASSIST_FLAG_THROTTLE          = 0x02;
