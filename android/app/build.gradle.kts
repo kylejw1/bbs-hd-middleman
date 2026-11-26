@@ -11,8 +11,8 @@ android {
         applicationId = "com.bbshd.middleman"
         minSdk = 26
         targetSdk = 34
-        versionCode = 19
-        versionName = "0.9.7"
+        versionCode = 21
+        versionName = "0.9.9"
     }
 
     buildTypes {

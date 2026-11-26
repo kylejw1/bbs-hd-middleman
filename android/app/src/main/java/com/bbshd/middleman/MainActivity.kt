@@ -17,7 +17,6 @@ import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
-import kotlin.math.atan
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -802,11 +801,14 @@ class MainActivity : Activity(), BleClient.Listener {
         //   3. the handset's barometer, for a bike with neither.
         //
         // bbs-fw reports permille (1000 x dh/ds); the hero shows degrees.
-        val permille = if (t.hasBikeSlope) t.bikeSlopePermille else null
-        if (permille != null) {
-            showSlopeDegrees(Math.toDegrees(atan(permille / 1000.0)))
+        // bbs-fw reports permille (1000 x rise/run), the middleman reports
+        // percent; both are converted to percent here, which is the unit the
+        // rider thinks in -- a 5% climb reads 5.0, not 2.9 degrees.
+        val bikeGrade = if (t.hasBikeSlope) t.bikeSlopePermille?.div(10.0) else null
+        if (bikeGrade != null) {
+            showSlopePercent(bikeGrade)
         } else if (t.hasBaro) {
-            showSlopeDegrees(Math.toDegrees(atan((t.slopePercent ?: 0.0) / 100.0)))
+            showSlopePercent(t.slopePercent)
         } else {
             showPhoneGrade()
         }
@@ -868,15 +870,16 @@ class MainActivity : Activity(), BleClient.Listener {
         }
     }
 
-    private fun showSlopeDegrees(degrees: Double?) {
-        if (degrees == null || degrees.isNaN()) {
+    private fun showSlopePercent(percent: Double?) {
+        if (percent == null || percent.isNaN()) {
             slopeValue.text = getString(R.string.dash)
             slopeValue.setTextColor(color(R.color.dim))
             return
         }
-        slopeValue.text = signed(degrees, 1, "\u00b0")
-        // Amber once the grade is steep enough to matter for gearing.
-        val steep = degrees >= 8.0 || degrees <= -8.0
+        slopeValue.text = signed(percent, 1, "%")
+        // Amber once the grade is steep enough to matter for gearing. 10% is a
+        // hard climb on a bike; the old 8-degree threshold was ~14%.
+        val steep = percent >= 10.0 || percent <= -10.0
         slopeValue.setTextColor(color(if (steep) R.color.warn else R.color.accent))
     }
 
@@ -886,7 +889,7 @@ class MainActivity : Activity(), BleClient.Listener {
             slopeValue.setTextColor(color(R.color.dim))
             return
         }
-        showSlopeDegrees(Math.toDegrees(atan(hill.gradePct / 100.0)))
+        showSlopePercent(hill.gradePct)
     }
 
     private fun updatePhoneReadouts() {

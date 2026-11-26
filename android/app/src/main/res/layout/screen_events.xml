@@ -10,6 +10,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="12dp" />
+        android:paddingHorizontal="20dp"
+        android:paddingVertical="12dp" />
 
 </ScrollView>

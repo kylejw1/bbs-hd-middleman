@@ -571,7 +571,11 @@ class ConfigScreen(
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         gravity = Gravity.END
         typeface = android.graphics.Typeface.MONOSPACE
-        setPadding(0, 0, 0, 0)
+        // Right-aligned numbers with no padding put the caret hard against the
+        // container edge, which is where the screen curves on a modern phone --
+        // dragging it was a coin flip. Inset the text and give the row height to
+        // hit.
+        setPadding(dp(12), dp(8), dp(12), dp(8))
         isSingleLine = true
     }
 
