@@ -120,7 +120,7 @@
                 android:orientation="vertical">
 
                 <TextView
-                    android:id="@+id/targetSpeedValue"
+                    android:id="@+id/cadenceValue"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:fontFamily="monospace"
@@ -128,6 +128,42 @@
                     android:text="@string/dash"
                     android:textColor="@color/fg"
                     android:textSize="36sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:letterSpacing="0.15"
+                    android:text="@string/label_cadence_rpm"
+                    android:textColor="@color/dim"
+                    android:textSize="10sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- What the controller is asking for, as opposed to what the rider is
+             doing. Kept on their own row so both stay legible. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingBottom="6dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/targetSpeedValue"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:maxLines="1"
+                    android:text="@string/dash"
+                    android:textColor="@color/fg"
+                    android:textSize="28sp" />
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -153,7 +189,7 @@
                     android:maxLines="1"
                     android:text="@string/dash"
                     android:textColor="@color/fg"
-                    android:textSize="36sp" />
+                    android:textSize="28sp" />
 
                 <TextView
                     android:layout_width="wrap_content"

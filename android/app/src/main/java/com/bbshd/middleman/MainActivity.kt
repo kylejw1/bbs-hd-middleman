@@ -25,6 +25,7 @@ import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONObject
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
  * The app shell: a header, a tab bar and one inflated view per screen.
@@ -81,6 +82,7 @@ class MainActivity : Activity(), BleClient.Listener {
     private lateinit var slopeValue: TextView
     private lateinit var speedValue: TextView
     private lateinit var pasValue: TextView
+    private lateinit var cadenceValue: TextView
     private lateinit var targetSpeedValue: TextView
     private lateinit var targetCurrentValue: TextView
     private lateinit var curveView: PulseCurveView
@@ -302,6 +304,7 @@ class MainActivity : Activity(), BleClient.Listener {
         slopeValue = dashboard.findViewById(R.id.slopeValue)
         speedValue = dashboard.findViewById(R.id.speedValue)
         pasValue = dashboard.findViewById(R.id.pasValue)
+        cadenceValue = dashboard.findViewById(R.id.cadenceValue)
         targetSpeedValue = dashboard.findViewById(R.id.targetSpeedValue)
         targetCurrentValue = dashboard.findViewById(R.id.targetCurrentValue)
         curveView = dashboard.findViewById(R.id.curveView)
@@ -809,13 +812,29 @@ class MainActivity : Activity(), BleClient.Listener {
         // perfectly real level.
         pasValue.text = t.assistLevel?.toString() ?: getString(R.string.dash)
 
+        // Actual pedalling cadence, measured on the bike and carried in the same
+        // 0xEB snapshot as the targets. Absent means the controller has not
+        // reported one on this link -- shown as "--", never as 0 rpm.
+        cadenceValue.text = if (t.hasCadence) {
+            t.cadenceRpm?.roundToInt()?.toString() ?: DASH
+        } else {
+            DASH
+        }
+
         // Live targets from bbs-fw's 0xEB snapshot, refreshed once a second and
         // supplemented by its on-change 0xED frames. The middleman applies the
         // 3 s freshness window and gates on the controller link, so with no
         // controller there is nothing to show and both read "--".
         val targetsOk = t.hasTargetTelemetry
+        // bbs-fw's target is a percentage of maximum cadence, not rpm -- but the
+        // graph's x-axis and the cadence marker are both rpm, so showing a
+        // percentage next to them invites the wrong comparison. Converted with
+        // the same 120 rpm maximum the curve uses, so the number and the curve
+        // agree.
         targetSpeedValue.text = if (targetsOk) {
-            t.targetSpeedPercent?.let { "$it%" } ?: DASH
+            t.targetSpeedPercent?.let {
+                "${(it * PasCurve.MOTOR_MAX_CADENCE_RPM / 100f).roundToInt()}"
+            } ?: DASH
         } else {
             DASH
         }
@@ -844,7 +863,7 @@ class MainActivity : Activity(), BleClient.Listener {
         // drawn, just without a dot -- better than inventing a position.
         if (bikeConfig != null) {
             val sport = lastModeSport
-            val level = t.assistLevel ?: 0
+            val level = curveLevelFor(t)
             if (sport != curveSport || level != curveLevel) {
                 curveSport = sport
                 curveLevel = level
@@ -942,9 +961,25 @@ class MainActivity : Activity(), BleClient.Listener {
 
             // Draw straight away rather than waiting for the next telemetry push.
             curveSport = lastModeSport
-            curveLevel = lastAssist ?: 0
+            curveLevel = curveLevelFor(lastTelemetry)
             refreshCurve()
         }
+    }
+
+    /**
+     * Which assist level the curve should model.
+     *
+     * The controller only reports a level once something has set one. With no
+     * display attached it reports 0, and level 0 is PAS-disabled -- the curve is
+     * then a flat line on the axis, which reads as "the graph is broken". The
+     * configured startup level is what the controller will actually use, so the
+     * curve shows that instead: still truthful about the shape of the assist,
+     * and visible.
+     */
+    private fun curveLevelFor(t: Telemetry?): Int {
+        val reported = t?.assistLevel ?: 0
+        if (reported > 0) return reported
+        return bikeConfig?.optInt("assistStartupLevel", 1) ?: 1
     }
 
     private fun refreshCurve() {

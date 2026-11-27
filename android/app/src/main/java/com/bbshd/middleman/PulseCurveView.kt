@@ -4,8 +4,13 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RectF
 import android.util.AttributeSet
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * The cadence/target-current graph.
@@ -56,6 +61,66 @@ class PulseCurveView(context: Context, attrs: AttributeSet? = null) :
 
     private val curvePath = Path()
     private val fillPath = Path()
+
+    // Drag readout. The cursor appears on touch rather than after a long press:
+    // a held finger drifts more than the touch slop, and the long-press timer
+    // kept getting cancelled by the ScrollView claiming the gesture. Vertical
+    // drags still scroll -- the parent intercepts, we get ACTION_CANCEL and the
+    // cursor goes away -- while a horizontal drag is clearly the cursor, so it
+    // takes the gesture for itself.
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private var downX = 0f
+    private var cursorX: Float? = null
+
+    private val cursorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF7C8CA6.toInt()
+        strokeWidth = 1f
+        style = Paint.Style.STROKE
+        pathEffect = android.graphics.DashPathEffect(floatArrayOf(6f, 6f), 0f)
+    }
+    private val bubblePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF111A2C.toInt()
+        style = Paint.Style.FILL
+    }
+    private val bubbleEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF35D6C4.toInt()
+        strokeWidth = 1f
+        style = Paint.Style.STROKE
+    }
+    private val bubbleText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFE6EDF7.toInt()
+        textSize = 26f
+        typeface = android.graphics.Typeface.MONOSPACE
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = event.x
+                cursorX = event.x
+                invalidate()
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (cursorX != null) {
+                    cursorX = event.x
+                    // A sideways drag past the slop is unambiguously a cursor
+                    // drag, so stop the ScrollView stealing it mid-read.
+                    if (abs(event.x - downX) > touchSlop) {
+                        parent?.requestDisallowInterceptTouchEvent(true)
+                    }
+                    invalidate()
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                cursorX = null
+                invalidate()
+                return true
+            }
+        }
+        return super.onTouchEvent(event)
+    }
 
     fun setCurve(params: PasCurve.Parameters?) {
         this.params = params
@@ -134,6 +199,35 @@ class PulseCurveView(context: Context, attrs: AttributeSet? = null) :
             canvas.drawLine(padLeft, cy, padLeft + w, cy, guidePaint)
             canvas.drawCircle(cx, cy, 6f, markerPaint)
             canvas.drawCircle(cx, cy, 6f, markerRing)
+        }
+
+        // Hold cursor: cadence and the curve's own current % at that cadence.
+        val tx = cursorX
+        if (tx != null && p != null) {
+            val rpm = ((tx - padLeft) / w) * PasCurve.MOTOR_MAX_CADENCE_RPM
+            val clamped = rpm.coerceIn(0f, PasCurve.MOTOR_MAX_CADENCE_RPM)
+            val pct = PasCurve.currentPct(p, clamped)
+            val x = xOf(clamped)
+            val y = yOf(pct)
+
+            canvas.drawLine(x, padTop, x, padTop + h, cursorPaint)
+            canvas.drawCircle(x, y, 7f, markerPaint)
+            canvas.drawCircle(x, y, 7f, markerRing)
+
+            val label = "${clamped.roundToInt()} rpm   ${pct.roundToInt()}%"
+            val tw = bubbleText.measureText(label)
+            val boxW = tw + 20f
+            val boxH = 38f
+            // Keep the bubble inside the view and clear of the point it describes.
+            var bx = x - boxW / 2f
+            bx = bx.coerceIn(padLeft, padLeft + w - boxW)
+            var by = y - boxH - 12f
+            if (by < padTop) by = y + 12f
+
+            val rect = RectF(bx, by, bx + boxW, by + boxH)
+            canvas.drawRoundRect(rect, 8f, 8f, bubblePaint)
+            canvas.drawRoundRect(rect, 8f, 8f, bubbleEdge)
+            canvas.drawText(label, bx + 10f, by + 26f, bubbleText)
         }
     }
 }
