@@ -56,10 +56,28 @@ constexpr uint8_t OPCODE_DISPLAY_WRITE_SPEED_LIM= 0x1f;
 // Event Log frame types
 constexpr uint8_t EVENT_LOG_ENTRY               = 0xee;
 constexpr uint8_t EVENT_LOG_DATA_ENTRY          = 0xed;
-// Dedicated slope frame emitted by bbs-fw roughly once a second:
-// 0xEA <grade permille hi> <lo> <checksum>. Swallowed like the event frames.
+// Primary live snapshot emitted by bbs-fw once a second:
+//   0xEB, flags, target current %, target speed %,
+//        cadence x10 (hi/lo), grade permille (hi/lo), checksum
+// Flags bit 0 means the grade is valid; before the first slope fit the middleman
+// must show "--" rather than 0 %. Swallowed so the display never sees it.
+constexpr uint8_t EVENT_LOG_SNAPSHOT_ENTRY      = 0xeb;
+constexpr size_t  EVENT_LOG_SNAPSHOT_SIZE       = 9;
+constexpr uint8_t EVENT_SNAPSHOT_FLAG_SLOPE_VALID = 0x01;
+
+// Legacy slope frame: 0xEA <grade permille hi> <lo> <checksum>. Older bbs-fw
+// builds send it; the snapshot above replaced it. Parsed for compatibility.
 constexpr uint8_t EVENT_LOG_SLOPE_ENTRY         = 0xea;
 constexpr size_t  EVENT_LOG_SLOPE_SIZE          = 4;
+
+// Legacy event-log data IDs that are still useful:
+//   128/129  target current/speed, emitted on change by the motor state machine
+//   149      pedal cadence, older firmware only
+// The snapshot carries all three, but the on-change target frames still arrive
+// between snapshots and are consumed as live values rather than logged.
+constexpr uint8_t EVENT_DATA_TARGET_CURRENT     = 128;
+constexpr uint8_t EVENT_DATA_TARGET_SPEED       = 129;
+constexpr uint8_t EVENT_DATA_PEDAL_CADENCE_RPM  = 149;
 // Assist Flags
 constexpr uint8_t ASSIST_FLAG_PAS               = 0x01;
 constexpr uint8_t ASSIST_FLAG_THROTTLE          = 0x02;

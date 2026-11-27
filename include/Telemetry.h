@@ -41,6 +41,13 @@ public:
     void updateBikeSlope(int16_t permille);
     bool  hasBikeSlope() const;
     int16_t getBikeSlopePermille() const;
+
+    // One atomic live snapshot from bbs-fw's 0xEB frame: target current/speed,
+    // pedal cadence and the controller's grade. All values are stamped with the
+    // same arrival time so a telemetry push cannot pair a new target with an old
+    // grade. slopeValid false leaves the previous grade alone.
+    void updateSnapshot(uint8_t targetCurrentPercent, uint8_t targetSpeedPercent,
+                        uint16_t cadenceRpmX10, int16_t slopePermille, bool slopeValid);
     float getCachedPressureHpa() const;
     float getCachedBaroTempC() const;
     float getCachedBaroAltitudeM() const;
@@ -52,7 +59,6 @@ public:
     void updateStatusCode(uint8_t code);
     void updateTemperature(int8_t controllerC, int8_t motorC);
     void updateFirmwareInfo(uint8_t major, uint8_t minor, uint8_t patch, uint8_t cfgVer, ControllerType type);
-
     // Activity tracking
     void recordDisplayRx(size_t bytes);
     void recordDisplayTx(size_t bytes);
@@ -118,6 +124,17 @@ private:
     uint32_t _lastBikeSlopeMs;
     uint32_t _lastBaroMs;
     uint32_t _lastVehicleDataMs;
+
+    // Live values carried by bbs-fw's 0xEB snapshot and, between snapshots, by
+    // its on-change target events: target current/speed and pedal cadence. They
+    // use the same short freshness window as the other live values, so a
+    // disconnected controller stops looking like a real target.
+    bool     _hasTargetTelemetry;
+    uint8_t  _targetCurrentPercent;
+    uint8_t  _targetSpeedPercent;
+    uint32_t _lastTargetTelemetryMs;
+    uint16_t _cadenceRpmX10;
+    uint32_t _lastCadenceMs;
 
     // Controller details
     uint8_t _fwMajor;

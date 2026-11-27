@@ -106,13 +106,24 @@ Every value the dashboard shows from the *display* protocol -- speed, voltage, b
 * **0x21 / 0x22 / 0x24 are three-byte queries.** They carry a trailing checksum (`0x11 + op`), and the controller ignores the two-byte form *silently* -- no error, no reply. Asking for voltage with two bytes produced a permanent 0.0 V and a suspicion that the decode was wrong; the decode was fine, the request never got answered. Voltage now reads correctly (39.8 V on a 36 V pack).
 * Queries are spaced by a 40 ms bus-idle check so they never land mid-frame.
 
-### No Debug Telemetry Frame Any More
+### Live Snapshot (`0xEB`) — grade, targets and cadence
 
-bbs-fw used to emit a `0xEC` frame carrying target current, target speed, pedal cadence and motor rpm. Commit `30f97cb` removed it, and the firmware is the reference for what exists, so **the middleman no longer parses it and `/api/telemetry` no longer carries `cadenceRpm`, `motorRpm`, `targetCurrentPercent`, `targetSpeedPercent` or `hasTargetTelemetry`.** The Android app lost its CADENCE hero, its three target cells and its PAS curve with them.
+bbs-fw no longer emits the old `0xEC` frame. Once a second it sends one fixed-layout snapshot so the app never pairs values from different instants:
 
-Do not reintroduce those fields without first adding the frame back to bbs-fw. The display protocol never carried them; there is no other source.
+```
+0xEB, flags, target_current%, target_speed%,
+     cadence_x10_hi, cadence_x10_lo,
+     grade_permille_hi, grade_permille_lo, checksum
+```
 
-The `0xEE` / `0xED` event-log frames still exist and are still parsed and swallowed.
+* **9 bytes**, big-endian, serialised byte by byte — never a raw C struct. `flags` bit 0 is "grade valid"; before the first slope fit the middleman leaves the previous grade alone and the app shows `--` rather than a fabricated 0 %.
+* `TelemetryTracker::updateSnapshot()` takes the mutex once and stamps targets, cadence and grade with the same arrival time. `SerialBridge` swallows the frame in both the pass-through and config-transaction paths.
+* Target current/speed **also** arrive between snapshots as `0xED` IDs **128**/**129** on change; the middleman consumes them as live values and keeps them out of the event ring. `0xEA` (grade) and `0xED` **149** (cadence) are **legacy** formats still parsed for a controller that has not been reflashed; new bbs-fw sends neither.
+* `/api/telemetry` carries `hasTargetTelemetry`, `targetCurrentPercent`, `targetSpeedPercent`, `hasCadence` and `cadenceRpm`. There is still **no `motorRpm`**: nothing emits it any more.
+* All of them use a **3 s freshness window** plus `isControllerActive()`, so a disconnected controller reads `--` rather than a stale target.
+* The display protocol never carried any of these; do not look for them in `handleControllerPacket()`.
+
+The Android dashboard's curve is drawn from the controller's own assist-level config (`/api/config`) and marked at `(cadenceRpm, targetCurrentPercent)`. If `hasCadence` is false the curve still renders, with no marker -- never a fabricated position.
 
 ### Binary Configuration Struct Layout (Version 5, 154 Bytes)
 Defined in [`include/BbsFwProtocol.h`](file:///home/kyle/dev/bbs-hd-middleman/include/BbsFwProtocol.h):
@@ -276,7 +287,7 @@ A native Kotlin app for a phone on the handlebars: one screen of live values ove
 * **Service discovery must not depend on `onMtuChanged`.** Some stacks never deliver it even when `requestMtu()` returned true, so a 1.5 s fallback calls `discoverServices()` regardless. Discovery is guarded by a flag so a late callback cannot run it twice.
 * **Subscribing to notifications needs TWO calls, and the second one needs a value.** `setCharacteristicNotification(char, true)` only tells the local stack; the peripheral does not send anything until the client writes the CCCD (`00002902-…`) with `ENABLE_NOTIFICATION_VALUE`. `BluetoothGatt.writeDescriptor()` returns `false` outright when the descriptor's value is still null — which compiles perfectly and fails only on a real device, surfacing as *"Could not write the notification descriptor"*. The firmware side is `PROPERTY_NOTIFY` plus an explicit `BLE2902` in `BlePortal::begin()`; the comment there says it "lets the client enable notifications", which is exactly what this is. Set `cccd.value` before writing it.
 * **The PIN gate is the same one the web client uses.** The device answers exactly one request before authentication: `POST /api/auth`. A device with no PIN configured accepts `{}` and returns `pinRequired:false`, so the handshake is a no-op by default. A rejected PIN is deliberately **not** retried, because the firmware counts failures and locks the transport for 30 s after five.
-* **Stale data is shown as absent, not as a stale number.** The altitude hero reads `--` until the middleman reports a barometer (`hasBaro`), and never falls back to the handset's own sensor — the two do not share a sea-level datum. There is no cadence or target display: bbs-fw stopped emitting the frame that carried them. The status line also names the failure — `Connected — no data for Ns` — because a frozen dashboard is precisely the failure mode this project has hit twice.
+* **Stale data is shown as absent, not as a stale number.** Slope reads `--` unless the controller has produced a grade (`hasBikeSlope`); the app computes no slope itself and has no DPS310 or handset fallback. Altitude reads `--` until the middleman reports a barometer (`hasBaro`), and never falls back to the handset's own sensor — the two do not share a sea-level datum. Target speed/current read `--` until a target event has arrived on the current controller link (`hasTargetTelemetry`), and the curve's marker is omitted when `hasCadence` is false rather than inventing an x value. The status line also names the failure — `Connected — no data for Ns` — because a frozen dashboard is precisely the failure mode this project has hit twice.
 * **`configChanges` on `MainActivity` is load-bearing.** The connection lives in the activity, so letting Android recreate it on rotation would drop the link — and a phone on the bars gets rotated. There is no foreground service, so backgrounding for a long time may cost the connection; reopening reconnects to the remembered MAC.
 * **Distribution is sideload-only by design.** No Play Store, account or review. **Android refuses an in-place update whose signing key changed**, so a rebuild elsewhere needs `adb uninstall com.bbshd.middleman` first. Do not commit a keystore — this repo is public.
 * **`user.home`, not `$HOME`, is what bites.** `sdkmanager` and AGP's debug-keystore lookup both resolve through Java's `user.home`; the two scripts redirect it. Details and symptoms in [`android/README.md`](file:///home/kyle/dev/bbs-hd-middleman/android/README.md).
@@ -293,6 +304,9 @@ A native Kotlin app for a phone on the handlebars: one screen of live values ove
 ├── android/               # Separate Gradle sub-project: native Android companion app
 │   ├── app/src/main/java/com/bbshd/middleman/
 │   │   ├── MainActivity.kt # Riding dashboard (plain framework views, no Compose)
+│   │   ├── GpsSpeed.kt    # Phone GPS Doppler speed for the speed hero
+│   │   ├── PasCurve.kt    # Configured cadence -> target-current model
+│   │   ├── PulseCurveView.kt # The cadence/target-current graph and marker
 │   │   ├── BleClient.kt   # GATT scan/connect/framing/auth -- the client copy of BleProtocol
 │   │   └── Telemetry.kt   # /api/telemetry + /api/events parsing
 │   └── tools/             # setup-toolchain.sh (JDK+SDK+Gradle), build.sh

@@ -1,0 +1,7 @@
+with notch at bottom, then clockwise from the notch on the one with pins
+
+1 red pl
+2 white rxd (on controller? so txd on display?)
+3 yellow p+
+4 green txd (on controller? so rxd on display?)
+5 black gnd

@@ -11,14 +11,16 @@
         android:orientation="vertical"
         android:padding="12dp">
 
-        <!-- The two figures a rider actually acts on. -->
+        <!-- The first row: the two figures that change fastest and are read at a
+             glance. Speed is the phone's GPS, never the controller's wheel
+             reading; the bike's wheel sensor is only used for the grade. -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingTop="4dp"
-            android:paddingBottom="6dp">
+            android:paddingBottom="4dp">
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -32,9 +34,10 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:fontFamily="monospace"
+                    android:maxLines="1"
                     android:text="@string/dash"
                     android:textColor="@color/accent"
-                    android:textSize="54sp" />
+                    android:textSize="44sp" />
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -57,28 +60,31 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:fontFamily="monospace"
+                    android:maxLines="1"
                     android:text="@string/dash"
                     android:textColor="@color/fg"
-                    android:textSize="54sp" />
+                    android:textSize="44sp" />
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:letterSpacing="0.15"
-                    android:text="@string/label_kmh"
+                    android:text="@string/label_gps_kmh"
                     android:textColor="@color/dim"
                     android:textSize="10sp" />
             </LinearLayout>
         </LinearLayout>
 
+        <!-- The second row: assist, and what the controller is currently asking
+             the motor to do. Target current/speed are percentages, exactly as
+             bbs-fw reports them. -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingTop="2dp"
             android:paddingBottom="6dp">
-
-
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -86,14 +92,16 @@
                 android:layout_weight="1"
                 android:gravity="center_horizontal"
                 android:orientation="vertical">
+
                 <TextView
                     android:id="@+id/pasValue"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:fontFamily="monospace"
+                    android:maxLines="1"
                     android:text="@string/dash"
                     android:textColor="@color/accent"
-                    android:textSize="54sp" />
+                    android:textSize="36sp" />
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -103,67 +111,73 @@
                     android:textColor="@color/dim"
                     android:textSize="10sp" />
             </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/targetSpeedValue"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:maxLines="1"
+                    android:text="@string/dash"
+                    android:textColor="@color/fg"
+                    android:textSize="36sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:letterSpacing="0.15"
+                    android:text="@string/label_target_speed"
+                    android:textColor="@color/dim"
+                    android:textSize="10sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/targetCurrentValue"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:maxLines="1"
+                    android:text="@string/dash"
+                    android:textColor="@color/fg"
+                    android:textSize="36sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:letterSpacing="0.15"
+                    android:text="@string/label_target_current"
+                    android:textColor="@color/dim"
+                    android:textSize="10sp" />
+            </LinearLayout>
         </LinearLayout>
 
-        <!-- Altitude from the bike's DPS310, or the phone's barometer when the
-             bike has none. A hero rather than a grid cell: it is the value the
-             grade is derived from, so it should be readable at a glance the way
-             speed and slope are. -->
-        <LinearLayout
+        <!-- Cadence / target-current curve. The curve is rebuilt from the
+             controller's own assist-level config; the marker is the rider's live
+             cadence and target current. -->
+        <com.bbshd.middleman.PulseCurveView
+            android:id="@+id/curveView"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="center_horizontal"
-            android:orientation="vertical"
-            android:paddingTop="2dp"
-            android:paddingBottom="8dp">
-
-            <TextView
-                android:id="@+id/altitudeValue"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:fontFamily="monospace"
-                android:text="@string/dash"
-                android:textColor="@color/fg"
-                android:textSize="44sp" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:letterSpacing="0.15"
-                android:text="@string/label_altitude_m"
-                android:textColor="@color/dim"
-                android:textSize="10sp" />
-        </LinearLayout>
+            android:layout_height="140dp"
+            android:layout_marginTop="2dp" />
 
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
             android:background="@color/line" />
-
-
-
-        <!-- Phone-sensor hill assist. The checkbox gates everything: off means the
-             middleman is never told about an override at all. -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingTop="2dp">
-
-
-            <TextView
-                android:id="@+id/hillGrade"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:fontFamily="monospace"
-                android:gravity="end"
-                android:text="--"
-                android:textColor="@color/fg"
-                android:textSize="13sp" />
-
-        </LinearLayout>
 
         <!-- Controls that write to the controller. Labels track telemetry, not the
              tap, so a command the motor rejects never looks like it succeeded. -->

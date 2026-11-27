@@ -458,6 +458,7 @@ String getEventDescription(uint8_t eventId, int16_t data, bool hasData) {
         case 146: return "Battery voltage calibrated: ADC factor=" + String(data / 100.0f, 2) + ".";
         case 147: return "Torque sensor raw ADC: " + String(data) + ".";
         case 148: return "Torque sensor calibrated: bias=" + String(data) + ".";
+        case 149: return "Pedal cadence: " + String(data / 10.0f, 1) + " rpm.";
         default:
             if (hasData) {
                 return "Unknown event ID " + String(eventId) + " (data=" + String(data) + ").";

@@ -95,15 +95,17 @@ Android Gradle Plugin itself.
 
 ## What it shows
 
-The two figures a rider acts on get the top third of the screen; everything else
-is a grid of bare values underneath, plus the tail of the event log.
+Five figures get the top of the screen — two large, then three below them — with
+the cadence/target-current curve underneath. Everything else is a grid of bare
+values, plus the tail of the event log.
 
 | Hero | Source |
 | :--- | :--- |
-| Slope, in degrees, signed | The phone's barometric grade, converted from percent with `atan` |
-| Speed, km/h | `speedKph` |
-| Cadence | `cadenceRpm` |
-| PAS | `assistLevel`, with the mode letter |
+| Slope, signed % | bbs-fw's grade only (`bikeSlopePermille / 10`); the app computes no slope and has no other source |
+| GPS speed, km/h | Phone GPS Doppler (`hill.gpsSpeedKph`); never the bike's wheel speed |
+| PAS | `assistLevel` |
+| Target speed, % | `targetSpeedPercent` |
+| Target current, % | `targetCurrentPercent` |
 
 | Cell | Source field |
 | :--- | :--- |
@@ -111,22 +113,30 @@ is a grid of bare values underneath, plus the tail of the event log.
 | Amps | `currentAmps` |
 | Battery | `batteryPercent` |
 | Volts | `batteryVoltage` |
-| Motor RPM | `motorRpm` |
-| Target current | `targetCurrentPercent` |
-| Target speed | `targetSpeedPercent` |
-| Mode | `operationMode` |
 | Status | `statusCode` (`OK`, or `E<n>`) |
-| Lights | `lights` |
+| Altitude | `baroAltitudeM` (middleman DPS310) |
+| Pressure | `baroPressureHpa` |
 
-The slope goes amber past ±8°, because that is where gearing decisions get made.
-There is no IMU anywhere in this system: the middleman has none, and the phone's
-grade comes from the barometer, so the hero reads `--` until that has produced a
-reading rather than showing a fabricated `+0.0°`.
+The slope goes amber past ±10%, because that is where gearing decisions get made.
+**The slope hero is the controller's grade and nothing else.** bbs-fw computes it
+from the altitude stream it is fed and reports it in the `0xEB` snapshot; the
+middleman forwards it. The app does not derive a fallback from the middleman's
+DPS310 or from the handset barometer, so the hero reads `--` until the controller
+has produced a valid grade.
 
-The cadence / motor RPM / target rows show `--` when `hasTargetTelemetry` is
-false. That flag means the firmware's `0xEC` debug frame has not arrived in the
-last four seconds — a stale number left over from a previous link is worse than
-no number.
+The speed hero is **GPS only**. The bike's wheel speed is no longer used by the
+app at all: the controller computes its own grade from its wheel ticks and
+altitude stream, and the app just displays the result. GPS is the only speed it
+shows.
+
+**The live values arrive in one `0xEB` snapshot.** Once a second bbs-fw sends
+grade, target current, target speed and pedal cadence in a single fixed-layout
+frame (9 bytes; flags bit 0 says the grade is valid). Target changes also arrive
+between snapshots as the existing `0xED` IDs **128**/**129**. The middleman turns
+them into `hasTargetTelemetry`, `targetCurrentPercent`, `targetSpeedPercent`,
+`hasCadence` and `cadenceRpm`, all with a 3 s freshness window. A missing value
+renders `--`, and the curve is still drawn without its marker when `hasCadence`
+is false rather than placing a dot at an invented rpm.
 
 ### What it deliberately does not do
 
@@ -262,19 +272,19 @@ So an injected level reads back correctly for about a second and then reverts. T
 is why the assist +/- buttons on the Dashboard are decorative against a connected
 display: the display is the authority.
 
-**The fix is a firmware-side override**, and it is what hill assist uses.
-`POST /api/cmd/auto-assist {"enabled":true,"level":N}` puts the middleman in charge:
-while the override is active it holds each display write frame until it is complete,
-substitutes its own PAS level, recomputes the 8-bit sum checksum, and forwards the
-modified frame. The display never sees the difference; the controller only ever sees
-our level, so there is no oscillation.
+**The fix is a firmware-side override.** `POST /api/cmd/auto-assist
+{"enabled":true,"level":N}` puts the middleman in charge: while the override is
+active it holds each display write frame until it is complete, substitutes its own
+PAS level, recomputes the 8-bit sum checksum, and forwards the modified frame. The
+display never sees the difference; the controller only ever sees our level, so
+there is no oscillation.
 
 Two consequences worth knowing:
 
 * **The display's PAS buttons stop working while the override is active.** The
   middleman rewrites whatever the display sends, including a rider's button press.
   The display will also show a level that may not match what the controller is doing.
-  Turn hill assist off to get the buttons back.
+  Clear the override to get the buttons back.
 * **The override is a 15 second lease, not a setting.** The app renews it every 5 s.
   If the phone dies, is backgrounded, or walks out of range, the middleman expires the
   override and the display gets control back. Without that the bike would be stuck at
@@ -282,126 +292,59 @@ Two consequences worth knowing:
 
 ## The hero row
 
-Four large figures above the curve: **SLOPE**, **KM/H**, **CADENCE** and **PAS**. The
-control row beneath is the two assist buttons and the mode button -- the level is not
-repeated between them, because it is already a hero, and there is no lights button.
+Five figures above the curve: **SLOPE** and **GPS KM/H** on the top row, then
+**PAS**, **TARGET SPD** and **TARGET CUR**. The control row beneath is the two
+assist buttons; there is no mode or lights button, and neither is shown as a
+readout any more.
 
-**SLOPE is the phone's barometric grade**, converted from percent to degrees with
-`atan` so the figure keeps the unit and the label it has always had. There is no
-IMU in the system to fall back to: the middleman has none, by design, and grade
-comes from pressure against distance.
+**SLOPE** is bbs-fw's grade in permille, converted to percent. Controller only:
+the middleman's DPS310 slope and the handset barometer are not display sources.
 
-CADENCE and PAS come from the `0xEC` target frame; CADENCE reads `--` whenever that
-frame is absent, because a stale pedal rate is worse than a blank one.
+PAS is the level the bridge believes is in force. Target speed/current are the
+controller's live targets as percentages; both read `--` until a target event
+arrives on the current controller link, because a stale target is worse than a
+blank one.
 
-The grid below no longer repeats CADENCE and ASSIST — they moved up to the heroes.
+The curve below is drawn from `/api/config` for the selected assist level and the
+standard/sport mode, with the marker at `(cadenceRpm, targetCurrentPercent)`. With
+no cadence frame the curve still renders, without a marker.
 
 ## Phone sensors on the dashboard
 
-Three cells in the same grid as the bike values, fed by the phone rather than the
-controller:
+GPS speed is a hero now, not a grid cell. Pressure and altitude are cells in the
+same grid as the bike values, fed by the middleman's DPS310 rather than the
+handset's barometer:
 
 | Cell | Source | Notes |
 | --- | --- | --- |
-| **GPS SPEED** | GPS Doppler speed | `--` until the first fix, and until location permission is granted |
-| **PRESSURE** | Barometer | Two decimals, because that is where the movement is |
-| **ALT** | Barometer | Pressure altitude, not elevation — see below |
+| **PRESSURE** | Middleman DPS310 | Two decimals, because that is where the movement is |
+| **ALT** | Middleman DPS310 | Pressure altitude, not elevation — see below |
 
-**These run whenever the dashboard is on screen, even with hill assist off.** The
-checkbox gates the *commands*, not the sensors; a rider checking whether the
-barometer is alive should not have to arm auto-assist to find out. They stop in
-`onPause` and resume with the screen, so a backgrounded app is not polling GPS.
+**GPS is started for the speed hero; the pressure and altitude cells come from
+the middleman over BLE.** The handset barometer is not used at all now that the
+slope hero is controller-only. The altitude checkbox gates forwarding altitude to
+the controller, not these readouts. GPS stops in `onPause` and resumes with the
+screen.
 
 **ALT is pressure altitude, not your elevation.** It is computed against the fixed
 1013.25 hPa standard datum, so a weather system moving through shifts it by tens of
 metres over a day, and it will not match a map or GPS elevation. It is stable over
-the seconds a grade cares about, which is all the estimator needs, and it is on the
-dashboard as a live sign the barometer is working rather than as a navigation
-instrument. The phone here reads about 968 m, consistent with roughly 1000 m of
-real elevation, but do not read it as a surveyed height.
+the seconds a grade cares about, and it is on the dashboard as a live sign the
+barometer is working rather than as a navigation instrument. The phone here reads
+about 968 m, consistent with roughly 1000 m of real elevation, but do not read it
+as a surveyed height.
 
-## Hill assist (barometric grade)
+## No phone-grade fallback
 
-A checkbox on the Dashboard. When on, the app measures road grade and commands an
-assist level from it:
-
-| Grade | Level |
-| --- | --- |
-| below 1 % (including downhill) | 1 |
-| 1–2 % | 2 |
-| 3 % | 4 |
-| 8 % and above | 9 (clamped) |
-
-`level = 1 + floor(grade%)`, clamped to 1..9.
-
-### Where the grade comes from
-
-Grade is **dh/ds**, so it needs a height and a distance.
-
-* **Height** from the phone's barometer. Near sea level the standard atmosphere
-  gives about **8.4 m per hPa**, and a phone barometer resolves a few pascals, so
-  a metre of climb is roughly 12 Pa — a 5 % grade is 6 Pa across ten metres.
-* **Distance** from the bike's speed sensor (telemetry `speedKph`, 1 Hz), falling
-  back to **GPS Doppler speed** when the bike is not reporting. Bike first because
-  it is the more accurate of the two; GPS covers rides where the controller is not
-  connected, and the case where the bike claims 0 while the phone is moving.
-* **The slope** is a least-squares fit of height against distance over a
-  travelling window of **4 s or 5 m, whichever is longer**, not a differentiated
-  reading — differentiating two noisy quantities gives a much noisier ratio than
-  fitting one against the other. Five metres is the binding constraint at walking
-  pace, where it takes longer to cover than the 4 s window does.
-
-An earlier version used the IMU pitch, and it was the wrong instrument: a phone in
-a pocket has no fixed attitude relative to the road, so its tilt says nothing about
-the hill. Barometric pressure does not care where the phone is or which way it
-points.
-
-### What to expect
-
-* **Response is about 3.5 seconds.** The window is a boxcar filter, so a change in
-  grade arrives as a ramp of roughly that length: from flat to a 6 % climb the
-  estimate settles inside 4 s. Shortening it from 8 s halved the lag and cost
-  almost nothing — measured scatter is 0.06 % grade at the barometer's 20 Hz,
-  an order of magnitude inside the 0.6 % level hysteresis.
-* **A stationary bike cannot measure a slope.** With no distance covered there is
-  nothing to differentiate, so the last known grade is held and the level stays put
-  until the bike moves again. Expect the level to lag a few seconds after pulling
-  away from a stop at the bottom of a hill.
-* **No Zero button, and none needed.** Differencing cancels the pressure offset
-  entirely, so unlike the IMU version there is no "level ground" reference to
-  capture. Weather drift is negligible in this role: 1 hPa/hour is 8.4 m/hour,
-  which at 20 km/h is a 0.04 % grade error.
-* **No barometer, no feature.** The checkbox is disabled and says so rather than
-  silently doing nothing.
-
-GPS speed needs location permission, requested when the checkbox is first ticked.
-Refusing it is not fatal — hill assist keeps working from the bike's speed sensor,
-which is the primary source anyway.
-
-### Accuracy
-
-Validated offline against a synthetic ride (standard-atmosphere pressure, GPS-like
-noise, the same fitting code) rather than on the bike:
-
-| Case | Estimate | Truth |
-| --- | --- | --- |
-| 5 % climb, 20 km/h | +5.00 % | +5.00 % |
-| 8 % climb, 12 km/h | +8.01 % | +8.00 % |
-| 15 % climb, 8 km/h | +15.00 % | +15.00 % |
-| 6 % descent, 25 km/h | −6.00 % | −6.00 % |
-| flat, 22 km/h | +0.01 % | 0.00 % |
-| 3 % climb, 6 km/h | +3.02 % | +3.00 % |
-
-Pressure noise of 3 Pa — ten times a typical barometer's floor — moves the steady
-reading by under 0.2 %. The remaining error is dominated by the **speed** source,
-not the sensor: grade scales inversely with speed, so a 5 % speed error reads as a
-5 % grade error.
+The app no longer computes a barometric grade on the phone. The slope hero is the
+controller's grade from the `0xEB` snapshot; `GpsSpeed` supplies only the phone's
+GPS Doppler speed. If the controller has no valid grade, the hero reads `--`.
 
 ## Known limitation: one-shot PAS injection
 
 The Dashboard's assist +/- controls still use the one-shot `POST /api/cmd/pas`, so
 against a connected display they revert within about a second. They are useful
 against a controller with no display attached. Making them work everywhere means
-routing them through the override while hill assist is off, which needs a decision
-about what the display should then show.
+routing them through the override, which needs a decision about what the display
+should then show.
 

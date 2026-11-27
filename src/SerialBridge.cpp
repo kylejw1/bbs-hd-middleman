@@ -333,9 +333,31 @@ void SerialBridge::processControllerRxPassThrough() {
             _controllerBuf[_controllerBufLen++] = byteVal;
         }
 
-        // Slope frame from bbs-fw: the controller computes the grade, this is it
-        // coming back. Swallowed so the display never sees a frame it cannot
-        // parse, exactly like the event frames below.
+        // Live snapshot from bbs-fw: grade, cadence and both motor targets from
+        // one control-loop pass. Swallowed so the display never sees a frame it
+        // cannot parse, exactly like the event frames below.
+        if (_controllerBufLen >= 1 && _controllerBuf[0] == EVENT_LOG_SNAPSHOT_ENTRY) {
+            if (_controllerBufLen >= EVENT_LOG_SNAPSHOT_SIZE) {
+                if (verifyChecksum(_controllerBuf, EVENT_LOG_SNAPSHOT_SIZE)) {
+                    const uint8_t flags = _controllerBuf[1];
+                    const uint16_t cadenceX10 = (uint16_t)((_controllerBuf[4] << 8) | _controllerBuf[5]);
+                    const int16_t slope = (int16_t)((_controllerBuf[6] << 8) | _controllerBuf[7]);
+                    Telemetry.updateSnapshot(_controllerBuf[2], _controllerBuf[3], cadenceX10, slope,
+                                             (flags & EVENT_SNAPSHOT_FLAG_SLOPE_VALID) != 0);
+                    Telemetry.recordIntercept();
+                    Debug.tracef("Snapshot: target %d%%, speed %d%%, cadence %d.%d rpm, slope %d permille",
+                                 _controllerBuf[2], _controllerBuf[3],
+                                 cadenceX10 / 10, cadenceX10 % 10, slope);
+                }
+                _controllerBufLen = 0;
+                continue;
+            }
+            continue;   // still arriving
+        }
+
+        // Legacy slope frame from older bbs-fw: the controller computes the
+        // grade, this is it coming back. The snapshot above replaced it, but a
+        // controller that has not been reflashed still sends this.
         if (_controllerBufLen >= 1 && _controllerBuf[0] == EVENT_LOG_SLOPE_ENTRY) {
             if (_controllerBufLen >= EVENT_LOG_SLOPE_SIZE) {
                 if (verifyChecksum(_controllerBuf, EVENT_LOG_SLOPE_SIZE)) {
@@ -404,12 +426,13 @@ void SerialBridge::handleControllerPacket(const uint8_t* buf, size_t len) {
     // Every display read opcode MUST appear below with its response length.
     //
     // Clearing the buffer here is what establishes "we are at a frame boundary",
-    // which is how processControllerRxPassThrough() knows to look for the 0xEC
-    // telemetry header. If an opcode falls through to default the buffer stays
-    // dirty for as long as the bus stays busy (responses less than the 30ms idle
-    // backstop apart), _controllerBuf[0] is then a stale response byte rather
-    // than 0xEC, and the next telemetry frame is appended and forwarded
-    // straight to the display as if it were response data.
+    // which is how processControllerRxPassThrough() knows to look for the live
+    // snapshot header (0xEB) and the legacy event/slope frames. If an opcode
+    // falls through to default the buffer stays dirty for as long as the bus
+    // stays busy (responses less than the 30ms idle backstop apart),
+    // _controllerBuf[0] is then a stale response byte rather than a frame
+    // header, and the next snapshot is appended and forwarded straight to the
+    // display as if it were response data.
     //
     // Response lengths are the uart_write counts in bbs-fw's
     // process_bafang_display_read_* handlers.
@@ -641,17 +664,21 @@ void SerialBridge::flushQueuedDisplayWrites() {
 // CONTROLLER CONFIG TRANSACTIONS
 // -----------------------------------------------------------------------------
 
-// bbs-fw emits event-log and debug-telemetry frames asynchronously and they can
-// land in the middle of a config transaction. They must be swallowed (and parsed
-// into telemetry) rather than counted as the transaction response, otherwise a
-// write gets "checksum mismatch" and fails even though the controller accepted it.
+// bbs-fw emits event-log, snapshot and legacy slope frames asynchronously and
+// they can land in the middle of a config transaction. They must be swallowed
+// (and parsed into telemetry) rather than counted as the transaction response,
+// otherwise a write gets "checksum mismatch" and fails even though the
+// controller accepted it.
 // Frame shapes: 0xEE <id> <chk> (3), 0xED <id> <hi> <lo> <chk> (5),
-// 0xEA <permille hi> <lo> <chk> (4). `firstByte` is already consumed.
+// 0xEB <flags> <cur> <spd> <cad hi> <cad lo> <slope hi> <slope lo> <chk> (9,
+// current), 0xEA <permille hi> <lo> <chk> (4, legacy). `firstByte` is already
+// consumed.
 bool SerialBridge::consumeControllerEventFrame(uint8_t firstByte, uint32_t deadlineMs) {
     const size_t evtSize = (firstByte == EVENT_LOG_ENTRY) ? 3
+                         : (firstByte == EVENT_LOG_SNAPSHOT_ENTRY) ? EVENT_LOG_SNAPSHOT_SIZE
                          : (firstByte == EVENT_LOG_SLOPE_ENTRY) ? EVENT_LOG_SLOPE_SIZE
                          : 5;
-    uint8_t frame[5];
+    uint8_t frame[EVENT_LOG_SNAPSHOT_SIZE];
     frame[0] = firstByte;
     size_t n = 1;
 
@@ -679,6 +706,17 @@ bool SerialBridge::consumeControllerEventFrame(uint8_t firstByte, uint32_t deadl
     if (!verifyChecksum(frame, evtSize)) {
         Debug.trace("Event frame checksum mismatch, discarded");
         return true;  // garbled frame consumed; keep waiting for the response
+    }
+
+    if (firstByte == EVENT_LOG_SNAPSHOT_ENTRY) {
+        const uint8_t flags = frame[1];
+        const uint16_t cadenceX10 = (uint16_t)((frame[4] << 8) | frame[5]);
+        const int16_t slope = (int16_t)((frame[6] << 8) | frame[7]);
+        Telemetry.updateSnapshot(frame[2], frame[3], cadenceX10, slope,
+                                 (flags & EVENT_SNAPSHOT_FLAG_SLOPE_VALID) != 0);
+        Telemetry.recordIntercept();
+        Debug.trace("Snapshot intercepted during config");
+        return true;
     }
 
     if (firstByte == EVENT_LOG_SLOPE_ENTRY) {
@@ -714,9 +752,10 @@ bool SerialBridge::receiveController(uint8_t* buf, size_t len, uint32_t timeoutM
             Telemetry.recordControllerRx(1);
             Debug.traceByte(TraceDir::ControllerRx, byteVal);
 
-            // At a frame boundary an async event-log or telemetry frame may be
+            // At a frame boundary an async event-log or snapshot frame may be
             // interleaved with the response we are waiting for.
             if (received == 0 && (byteVal == EVENT_LOG_ENTRY || byteVal == EVENT_LOG_DATA_ENTRY ||
+                                  byteVal == EVENT_LOG_SNAPSHOT_ENTRY ||
                                   byteVal == EVENT_LOG_SLOPE_ENTRY)) {
                 if (!consumeControllerEventFrame(byteVal, deadlineMs)) {
                     return false;

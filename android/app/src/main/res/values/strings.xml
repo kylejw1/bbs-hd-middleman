@@ -9,8 +9,11 @@
     <string name="plus">+</string>
     <string name="label_slope">SLOPE</string>
     <string name="label_kmh">KM/H</string>
+    <string name="label_gps_kmh">GPS KM/H</string>
     <string name="label_cadence">CADENCE</string>
     <string name="label_pas">PAS</string>
+    <string name="label_target_speed">TARGET SPD</string>
+    <string name="label_target_current">TARGET CUR</string>
     <string name="label_altitude">ALTITUDE</string>
     <string name="label_altitude_m">ALTITUDE (m)</string>
     <string name="send_altitude">Send altitude to controller</string>

@@ -81,7 +81,9 @@ class MainActivity : Activity(), BleClient.Listener {
     private lateinit var slopeValue: TextView
     private lateinit var speedValue: TextView
     private lateinit var pasValue: TextView
-    private lateinit var altitudeValue: TextView
+    private lateinit var targetSpeedValue: TextView
+    private lateinit var targetCurrentValue: TextView
+    private lateinit var curveView: PulseCurveView
     private lateinit var sendAltitudeCheck: CheckBox
     private lateinit var sendAltitudeState: TextView
     private lateinit var gridContainer: LinearLayout
@@ -116,28 +118,26 @@ class MainActivity : Activity(), BleClient.Listener {
     private var lastAssist: Int? = null
     private var lastTelemetry: Telemetry? = null
 
-    // Hill assist
-    private lateinit var hill: BaroGrade
-    private lateinit var hillGrade: TextView
-    /** True once this app has commanded a level, so the hero can show it. */
+    // GPS speed
+    private lateinit var gps: GpsSpeed
     /** Which level table the curve draws from; the mode is read, not switched. */
     private var lastModeSport = false
-    private var hillUiLastMs = 0L
-    private var hillStarted = false
+    private var gpsStarted = false
 
     /** Last config read, used only to draw the PAS curve. */
+    private var bikeConfig: JSONObject? = null
+    private var curveSport: Boolean? = null
+    private var curveLevel: Int? = null
 
     private val statDefs = listOf(
         "power" to "WATTS",
         "current" to "AMPS",
         "battery" to "BATTERY",
         "voltage" to "VOLTS",
-        "mode" to "MODE",
         "status" to "STATUS",
-        "lights" to "LIGHTS",
+        "altitude" to "ALT (m)",
         // The phone's own sensors, not the bike's. Kept in the same grid because
         // they answer the same question: what is happening right now.
-        "gpsSpeed" to "GPS SPEED",
         "pressure" to "PRESSURE",
     )
 
@@ -193,11 +193,11 @@ class MainActivity : Activity(), BleClient.Listener {
     override fun onResume() {
         super.onResume()
         main.postDelayed(ticker, 1_000)
-        // The barometer and GPS run whenever the dashboard is up, because they
-        // feed the readouts. Only the *commands* are gated on the checkbox.
-        if (!hillStarted) {
-            hill.start()
-            hillStarted = true
+        // The speed hero is GPS, and the slope hero is the controller's grade.
+        // No handset barometer is sampled anywhere.
+        if (!gpsStarted) {
+            gpsStarted = true
+            ensureGpsStarted()
         }
     }
 
@@ -209,9 +209,9 @@ class MainActivity : Activity(), BleClient.Listener {
         // has no foreground service, and dropping to "Disconnected" every time
         // the rider glances at a notification would make it useless.
         main.removeCallbacks(ticker)
-        if (hillStarted) {
-            hill.stop()
-            hillStarted = false
+        if (gpsStarted) {
+            gps.stop()
+            gpsStarted = false
         }
     }
 
@@ -301,10 +301,12 @@ class MainActivity : Activity(), BleClient.Listener {
         val dashboard = screens[SCREEN_DASHBOARD]
         slopeValue = dashboard.findViewById(R.id.slopeValue)
         speedValue = dashboard.findViewById(R.id.speedValue)
-        altitudeValue = dashboard.findViewById(R.id.altitudeValue)
+        pasValue = dashboard.findViewById(R.id.pasValue)
+        targetSpeedValue = dashboard.findViewById(R.id.targetSpeedValue)
+        targetCurrentValue = dashboard.findViewById(R.id.targetCurrentValue)
+        curveView = dashboard.findViewById(R.id.curveView)
         sendAltitudeCheck = dashboard.findViewById(R.id.sendAltitudeCheck)
         sendAltitudeState = dashboard.findViewById(R.id.sendAltitudeState)
-        pasValue = dashboard.findViewById(R.id.pasValue)
         gridContainer = dashboard.findViewById(R.id.gridContainer)
 
         buildGrid()
@@ -317,12 +319,7 @@ class MainActivity : Activity(), BleClient.Listener {
         sendAltitudeCheck.setOnClickListener { setSendAltitude(sendAltitudeCheck.isChecked) }
         dashboard.findViewById<Button>(R.id.assistDown).setOnClickListener { nudgeAssist(-1) }
 
-        hillGrade = dashboard.findViewById(R.id.hillGrade)
-
-        // Grade is measured and displayed. Nothing in this version acts on it:
-        // the only command the controller accepts is a PAS level, and this build
-        // deliberately never sends one on its own.
-        hill = BaroGrade(this) { grade -> onGrade(grade) }
+        gps = GpsSpeed(this)
 
         eventsList = screens[SCREEN_EVENTS].findViewById(R.id.eventsList)
         renderEvents()
@@ -613,11 +610,11 @@ class MainActivity : Activity(), BleClient.Listener {
             val granted = grantResults.isNotEmpty() &&
                 grantResults[0] == PackageManager.PERMISSION_GRANTED
             if (granted) {
-                if (!hill.startGps()) toast("GPS speed unavailable")
+                if (!gps.startGps()) toast("GPS speed unavailable")
             } else {
-                // Not an error: the bike's speed sensor is the primary source and
-                // hill assist still works without GPS.
-                toast("No GPS speed - using the bike's speed sensor only")
+                // The speed hero is GPS-only, so there is no wheel-speed
+                // fallback to offer. It will read "--".
+                toast("No GPS speed - the speed hero will read --")
             }
             return
         }
@@ -667,6 +664,7 @@ class MainActivity : Activity(), BleClient.Listener {
             // The curve needs the level parameters, which only /api/config carries.
             // One read per connection; it costs about a second of bridge time.
             refreshAltitudeSetting()
+            fetchCurveConfig()
         }
         if (state == BleClient.State.FAILED) {
             toast(detail)
@@ -777,40 +775,31 @@ class MainActivity : Activity(), BleClient.Listener {
 
     private fun render(t: Telemetry) {
         lastTelemetry = t
-        // Everything from the display's own queries -- speed, volts, battery,
-        // amps, assist, mode, status, lights -- is only meaningful while that
-        // display is actually polling. With it unplugged the firmware has nothing
-        // to report, and showing the last constructed value would be a reading of
-        // a battery that was never measured.
+        // Everything from the display's own queries -- volts, battery, amps,
+        // assist, status -- is only meaningful while that display is actually
+        // polling. With it unplugged the firmware has nothing to report, and
+        // showing the last constructed value would be a reading of a battery
+        // that was never measured.
         val displayOk = t.displayConnected
-        // Speed, voltage, battery, amps and watts are the controller's own
-        // readings, obtained either by a display's queries or by this bridge
-        // polling for them directly. They are valid whenever the firmware says
-        // one arrived recently -- a display has nothing to do with it.
+        // Voltage, battery, amps and watts are the controller's own readings,
+        // obtained either by a display's queries or by this bridge polling for
+        // them directly. They are valid whenever the firmware says one arrived
+        // recently -- a display has nothing to do with it.
         val vehicleOk = t.hasVehicleData || displayOk
 
-        speedValue.text = if (vehicleOk) number(t.speedKph, 1) else getString(R.string.dash)
-        // Barometric grade is dh/ds, so it is only defined while we know how fast
-        // the bike is travelling; this is the distance term.
-        if (::hill.isInitialized) hill.updateBikeSpeed(t.speedKph)
-
-        // Grade, best source first:
-        //   1. bbs-fw's own, computed on the controller from the altitude stream
-        //      -- the only one that sees what the motor sees;
-        //   2. the middleman's local estimate from its DPS310;
-        //   3. the handset's barometer, for a bike with neither.
+        // Speed is the phone's GPS, updated by updatePhoneReadouts(). The bike's
+        // wheel speed is not shown and, now that the handset barometer is no
+        // longer used, not needed by the app either.
         //
-        // bbs-fw reports permille (1000 x dh/ds); the hero shows degrees.
-        // bbs-fw reports permille (1000 x rise/run), the middleman reports
-        // percent; both are converted to percent here, which is the unit the
-        // rider thinks in -- a 5% climb reads 5.0, not 2.9 degrees.
-        val bikeGrade = if (t.hasBikeSlope) t.bikeSlopePermille?.div(10.0) else null
-        if (bikeGrade != null) {
-            showSlopePercent(bikeGrade)
-        } else if (t.hasBaro) {
-            showSlopePercent(t.slopePercent)
+        // The slope hero is the controller's grade and nothing else. bbs-fw
+        // computes it from the altitude stream and reports it in the 0xEB
+        // snapshot; the middleman forwards it. No DPS310 fallback and no
+        // handset barometer -- a number the controller did not compute is not
+        // this number. bbs-fw reports permille; the hero shows percent.
+        if (t.hasBikeSlope) {
+            showSlopePercent(t.bikeSlopePermille?.div(10.0))
         } else {
-            showPhoneGrade()
+            showSlopePercent(null)
         }
 
         // Always show the level the bridge believes is in force: a display's
@@ -820,6 +809,22 @@ class MainActivity : Activity(), BleClient.Listener {
         // perfectly real level.
         pasValue.text = t.assistLevel?.toString() ?: getString(R.string.dash)
 
+        // Live targets from bbs-fw's 0xEB snapshot, refreshed once a second and
+        // supplemented by its on-change 0xED frames. The middleman applies the
+        // 3 s freshness window and gates on the controller link, so with no
+        // controller there is nothing to show and both read "--".
+        val targetsOk = t.hasTargetTelemetry
+        targetSpeedValue.text = if (targetsOk) {
+            t.targetSpeedPercent?.let { "$it%" } ?: DASH
+        } else {
+            DASH
+        }
+        targetCurrentValue.text = if (targetsOk) {
+            t.targetCurrentPercent?.let { "$it%" } ?: DASH
+        } else {
+            DASH
+        }
+
         // Refreshed here as well as on the 1 Hz ticker: this is where the bike's
         // barometer reading actually arrives.
         updateAltitudeReadout()
@@ -828,46 +833,47 @@ class MainActivity : Activity(), BleClient.Listener {
         put("current", if (vehicleOk) number(t.currentAmps, 1) else null)
         put("battery", if (vehicleOk) t.batteryPercent?.let { "$it%" } else null)
         put("voltage", if (vehicleOk) number(t.batteryVoltage, 1) else null)
-
-        put("assist", if (displayOk) t.assistLevel?.toString() else null)
-        lastModeSport = t.operationMode.equals("Sport", ignoreCase = true)
-        put("mode", if (displayOk) t.operationMode else null)
         put("status", if (displayOk) t.statusCode?.let { if (it == 0) "OK" else "E$it" } else null)
-        put("lights", if (displayOk) (if (t.lights) "ON" else "OFF") else null)
+
+        // The mode is not shown any more, but the curve still has to know which
+        // level table the controller is using.
+        lastModeSport = t.operationMode.equals("Sport", ignoreCase = true)
+
+        // Re-select the curve only when the level or mode actually changed; the
+        // marker moves on every push. With no cadence frame the curve is still
+        // drawn, just without a dot -- better than inventing a position.
+        if (bikeConfig != null) {
+            val sport = lastModeSport
+            val level = t.assistLevel ?: 0
+            if (sport != curveSport || level != curveLevel) {
+                curveSport = sport
+                curveLevel = level
+                refreshCurve()
+            }
+        }
+        curveView.setMarker(
+            if (t.hasCadence) t.cadenceRpm?.toFloat() else null,
+            if (targetsOk) t.targetCurrentPercent?.toFloat() else null,
+        )
 
         lastAssist = t.assistLevel
     }
 
-    // --- hill assist ----------------------------------------------------------
+    // --- GPS speed ------------------------------------------------------------
 
-    private fun maybeRequestLocation() {
-        // GPS is only a fallback for the bike's own speed sensor, so the feature
-        // works without it; the permission buys coasting and GPS-only rides.
-        if (hill.usingGps) return
+    private fun ensureGpsStarted() {
+        // The speed hero is GPS, so this is the only sensor start the dashboard
+        // needs. Location is requested here as well as in the BLE permission
+        // set because Android 12+ does not include location in that set, and
+        // without it the hero would silently read "--" on every phone.
+        if (gps.usingGps) return
         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
         ) {
-            if (!hill.startGps()) toast("GPS speed unavailable")
+            if (!gps.startGps()) toast("GPS speed unavailable")
             return
         }
         requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), REQ_LOCATION)
-    }
-
-
-    private fun onGrade(grade: Double) {
-        val now = SystemClock.elapsedRealtime()
-
-        // 10 Hz is plenty for a label the eye reads at a glance; the estimator
-        // itself runs at the barometer's rate.
-        if (now - hillUiLastMs >= 100) {
-            hillUiLastMs = now
-            // 1 + slope% x 5, the same formula the firmware publishes, so a bike
-            // without the barometer still shows the number the sensor would give.
-            val mult = (1.0 + grade * 0.05).coerceIn(0.5, 3.0)
-            hillGrade.text = String.format(
-                Locale.US, "%s%.1f%%   x%.2f", if (grade >= 0) "+" else "", grade, mult
-            )
-        }
     }
 
     private fun showSlopePercent(percent: Double?) {
@@ -883,18 +889,14 @@ class MainActivity : Activity(), BleClient.Listener {
         slopeValue.setTextColor(color(if (steep) R.color.warn else R.color.accent))
     }
 
-    private fun showPhoneGrade() {
-        if (!::hill.isInitialized) {
-            slopeValue.text = getString(R.string.dash)
-            slopeValue.setTextColor(color(R.color.dim))
-            return
-        }
-        showSlopePercent(hill.gradePct)
-    }
-
     private fun updatePhoneReadouts() {
-        if (!::hill.isInitialized) return
-        put("gpsSpeed", number(hill.gpsSpeedKph, 1))
+        if (!::gps.isInitialized) return
+        // The hero speed is GPS and only GPS. No fallback to the bike's wheel
+        // speed: the two are different measurements, and swapping between them
+        // without telling the rider is worse than showing "--". The value is
+        // dropped once the fix goes stale, so a tunnel reads "--" rather than
+        // freezing at the last speed.
+        speedValue.text = number(gps.freshGpsSpeedKph, 1)
 
         // Barometer readings come from the middleman over BLE and nowhere else.
         // The handset has its own sensor, but it measures the air in a pocket or
@@ -914,9 +916,42 @@ class MainActivity : Activity(), BleClient.Listener {
      * the rider cannot see.
      */
     private fun updateAltitudeReadout() {
-        if (!::altitudeValue.isInitialized) return
         val altitude = lastTelemetry?.takeIf { it.hasBaro }?.baroAltitudeM
-        altitudeValue.text = number(altitude, 0)
+        put("altitude", number(altitude, 0))
+    }
+
+    /**
+     * Read the controller's assist-level parameters once per connection so the
+     * curve can be drawn from them. The controller intermittently misses the
+     * firmware's 3.5 s read budget on the first attempt (503), exactly as the
+     * Config tab sees; without a retry the curve silently never appears.
+     */
+    private fun fetchCurveConfig(attempt: Int = 1) {
+        ble.get("/api/config") config@{ status, body ->
+            if (status == 503 && attempt < 3) {
+                main.postDelayed({ fetchCurveConfig(attempt + 1) }, 500)
+                return@config
+            }
+            if (status != 200) {
+                Log.w(TAG, "curve config read failed ($status)")
+                return@config
+            }
+            val parsed = runCatching { JSONObject(body) }.getOrNull() ?: return@config
+            bikeConfig = parsed
+            Log.i(TAG, "curve config v${parsed.optInt("configVersion")} loaded")
+
+            // Draw straight away rather than waiting for the next telemetry push.
+            curveSport = lastModeSport
+            curveLevel = lastAssist ?: 0
+            refreshCurve()
+        }
+    }
+
+    private fun refreshCurve() {
+        val config = bikeConfig ?: return
+        curveView.setCurve(
+            PasCurve.parameters(config, curveSport ?: false, curveLevel ?: 0)
+        )
     }
 
     /**

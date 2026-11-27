@@ -31,6 +31,12 @@ TelemetryTracker::TelemetryTracker()
     , _lastBikeSlopeMs(0)
     , _lastBaroMs(0)
     , _lastVehicleDataMs(0)
+    , _hasTargetTelemetry(false)
+    , _targetCurrentPercent(0)
+    , _targetSpeedPercent(0)
+    , _lastTargetTelemetryMs(0)
+    , _cadenceRpmX10(0)
+    , _lastCadenceMs(0)
     , _fwMajor(0)
     , _fwMinor(0)
     , _fwPatch(0)
@@ -111,6 +117,30 @@ void TelemetryTracker::updateBikeSlope(int16_t permille) {
     if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         _bikeSlopePermille = permille;
         _lastBikeSlopeMs = millis();
+        xSemaphoreGive(_mutex);
+    }
+}
+
+void TelemetryTracker::updateSnapshot(uint8_t targetCurrentPercent, uint8_t targetSpeedPercent,
+                                      uint16_t cadenceRpmX10, int16_t slopePermille, bool slopeValid) {
+    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        const uint32_t now = millis();
+
+        _targetCurrentPercent = targetCurrentPercent > 100 ? 100 : targetCurrentPercent;
+        _targetSpeedPercent = targetSpeedPercent > 100 ? 100 : targetSpeedPercent;
+        _cadenceRpmX10 = cadenceRpmX10;
+        _hasTargetTelemetry = true;
+        _lastTargetTelemetryMs = now;
+        _lastCadenceMs = now;
+
+        // A snapshot before the first slope fit carries flags bit 0 clear; leave
+        // the previous grade (and its timestamp) alone so the app keeps showing
+        // "--" rather than a fabricated 0 %.
+        if (slopeValid) {
+            _bikeSlopePermille = slopePermille;
+            _lastBikeSlopeMs = now;
+        }
+
         xSemaphoreGive(_mutex);
     }
 }
@@ -226,6 +256,32 @@ void TelemetryTracker::recordForward() {
 
 void TelemetryTracker::addEvent(uint8_t eventId, int16_t data, bool hasData) {
     if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        // Pedal cadence is a periodic value, not an event: one frame a second
+        // would fill the 60-entry log with the rider's legs and push real
+        // faults out of it. Consume it into telemetry and stop here.
+        if (hasData && eventId == EVENT_DATA_PEDAL_CADENCE_RPM) {
+            _cadenceRpmX10 = (uint16_t)(data < 0 ? 0 : data);
+            _lastCadenceMs = millis();
+            xSemaphoreGive(_mutex);
+            return;
+        }
+
+        // Target current/speed are live values refreshed once a second, not
+        // events: logging them would put two rows a second in the ring buffer
+        // and make the BLE event push fire continuously. Consume and stop.
+        if (hasData && (eventId == EVENT_DATA_TARGET_CURRENT || eventId == EVENT_DATA_TARGET_SPEED)) {
+            const uint8_t pct = (uint8_t)(data < 0 ? 0 : (data > 100 ? 100 : data));
+            if (eventId == EVENT_DATA_TARGET_CURRENT) {
+                _targetCurrentPercent = pct;
+            } else {
+                _targetSpeedPercent = pct;
+            }
+            _hasTargetTelemetry = true;
+            _lastTargetTelemetryMs = millis();
+            xSemaphoreGive(_mutex);
+            return;
+        }
+
         EventLogItem& item = _events[_eventHead];
         item.timestampMs = millis();
         item.id = eventId;
@@ -320,9 +376,21 @@ void TelemetryTracker::buildTelemetryJson(JsonDocument& doc) {
         doc["controllerTempC"] = _controllerTempC;
         doc["motorTempC"] = _motorTempC;
 
-        // No motor targets or cadence: bbs-fw stopped emitting the 0xEC debug
-        // frame (commit 30f97cb), and the display protocol never carried them.
-        // The firmware is the reference, so these are gone rather than faked.
+        // Live targets and pedal cadence. bbs-fw no longer emits the old 0xEC
+        // debug frame; its replacement is the 0xEB snapshot once a second,
+        // carrying everything from one control-loop pass. Target changes still
+        // arrive between snapshots as 0xED 128/129, and older firmware may send
+        // cadence as 0xED 149. All of them stamp the same freshness window.
+        const bool controllerOk = isControllerActive();
+        const bool targetsOk = controllerOk && _hasTargetTelemetry &&
+                               (millis() - _lastTargetTelemetryMs < 3000);
+        const bool cadenceOk = controllerOk && _lastCadenceMs != 0 &&
+                               (millis() - _lastCadenceMs < 3000);
+        doc["hasTargetTelemetry"] = targetsOk;
+        doc["targetCurrentPercent"] = targetsOk ? _targetCurrentPercent : 0;
+        doc["targetSpeedPercent"] = targetsOk ? _targetSpeedPercent : 0;
+        doc["hasCadence"] = cadenceOk;
+        doc["cadenceRpm"] = serialized(String(cadenceOk ? (_cadenceRpmX10 / 10.0f) : 0.0f, 1));
 
         // True while speed/voltage/battery are actually being measured -- by a
         // display, or by this bridge polling for them. The app uses it to decide
